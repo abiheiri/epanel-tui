@@ -743,8 +743,7 @@ int app_load(App *app) {
         long len = ftell(fp);
         fseek(fp, 0, SEEK_SET);
         char *buf = malloc(len + 1);
-        if (buf) {
-            fread(buf, 1, len, fp);
+        if (buf && fread(buf, 1, len, fp) == (size_t)len) {
             buf[len] = '\0';
             EPanelData new_data = {0};
             if (epanel_from_json(buf, &new_data)) {
@@ -864,7 +863,12 @@ int app_reload(App *app) {
         free(data_path);
         return -1;
     }
-    fread(buf, 1, len, fp);
+    if (fread(buf, 1, len, fp) != (size_t)len) {
+        free(buf);
+        fclose(fp);
+        free(data_path);
+        return -1;
+    }
     buf[len] = '\0';
     fclose(fp);
 
@@ -946,11 +950,13 @@ static int timespec_passed(const struct timespec *ts) {
     return 0;
 }
 
+#ifdef __APPLE__
 static long timespec_diff_ms(const struct timespec *a, const struct timespec *b) {
     long sec = a->tv_sec - b->tv_sec;
     long nsec = a->tv_nsec - b->tv_nsec;
     return sec * 1000 + nsec / 1000000;
 }
+#endif
 
 void app_data_changed(App *app) {
     struct timespec now;
@@ -1383,7 +1389,8 @@ static void app_handle_popup(App *app, int ch, int *changed) {
     case POPUP_ALERT:
         if (ch == '\n' || ch == KEY_ENTER) {
             if (p->alert_action == ALERT_ACTION_OPEN_SETTINGS) {
-                system("open 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles'");
+                int rc = system("open 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles'");
+                (void)rc;
             }
             popup_clear(p);
             *changed = 1;
@@ -1458,8 +1465,7 @@ static void app_handle_popup(App *app, int ch, int *changed) {
                 long len = ftell(fp);
                 fseek(fp, 0, SEEK_SET);
                 char *buf = malloc(len + 1);
-                if (buf) {
-                    fread(buf, 1, len, fp);
+                if (buf && fread(buf, 1, len, fp) == (size_t)len) {
                     buf[len] = '\0';
                     EPanelData new_data = {0};
                     if (epanel_from_json(buf, &new_data)) {
