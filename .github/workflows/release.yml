@@ -72,7 +72,7 @@ jobs:
       - name: Package binary
         run: |
           mkdir -p dist
-          cp epanel dist/epanel
+          cp build/epanel dist/epanel
           tar -czf dist/${{ matrix.binary_name }}-${{ matrix.target }}.tar.gz -C dist epanel
           rm dist/epanel
 
