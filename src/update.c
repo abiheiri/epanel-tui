@@ -160,7 +160,7 @@ int self_update(const char *current_version, const char *target_triple) {
         current_exe[len] = '\0';
     }
 
-    char backup[1024];
+    char backup[1024 + 8];
     snprintf(backup, sizeof(backup), "%s.old", current_exe);
     unlink(backup);
     if (rename(current_exe, backup) != 0) {
@@ -177,7 +177,8 @@ int self_update(const char *current_version, const char *target_triple) {
     unlink(backup);
 
     snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", tmp_dir);
-    system(cmd);
+    int cleanup_rc = system(cmd);
+    (void)cleanup_rc;
 
     printf("Updated to the latest version successfully.\n");
     return 0;
