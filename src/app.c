@@ -388,9 +388,38 @@ void popup_set_alert(Popup *p, const char *msg) {
 /* Flat items                                                                 */
 /* -------------------------------------------------------------------------- */
 
+static int entry_matches_search(const char *text, const char *search) {
+    const char *p = text;
+    const char *q = search;
+    while (*p) {
+        if (tolower((unsigned char)*p) == tolower((unsigned char)*q)) {
+            if (!*++q) return 1;
+        } else {
+            q = search;
+        }
+        p++;
+    }
+    return 0;
+}
+
+static int folder_has_search_match(const Folder *f, const char *search) {
+    if (!search || search[0] == '\0') return 1;
+    if (f->name && entry_matches_search(f->name, search)) return 1;
+    for (size_t i = 0; i < f->entry_count; i++) {
+        if (f->entries[i].text && entry_matches_search(f->entries[i].text, search))
+            return 1;
+    }
+    for (size_t i = 0; i < f->subfolder_count; i++) {
+        if (folder_has_search_match(&f->subfolders[i], search)) return 1;
+    }
+    return 0;
+}
+
 static void rebuild_flat(Folder *f, size_t depth, FlatItem **out, size_t *count, size_t *cap, const IdSet *expanded, const char *search) {
+    int is_searching = search && search[0] != '\0';
     for (size_t i = 0; i < f->subfolder_count; i++) {
         Folder *sub = &f->subfolders[i];
+        if (is_searching && !folder_has_search_match(sub, search)) continue;
         if (*count >= *cap) {
             size_t old_cap = *cap;
             *cap = *cap ? *cap * 2 : 16;
@@ -405,31 +434,17 @@ static void rebuild_flat(Folder *f, size_t depth, FlatItem **out, size_t *count,
         item->depth = depth;
         free(item->name);
         item->name = str_dup(sub->name);
-        item->is_collapsed = sub->is_collapsed;
+        item->is_collapsed = is_searching ? 0 : sub->is_collapsed;
 
-        int show_children = !search || search[0] == '\0';
-        if (!show_children) {
-            show_children = idset_contains((IdSet *)expanded, sub->id);
-        }
-        if (show_children && !sub->is_collapsed) {
+        if (is_searching || !sub->is_collapsed) {
             rebuild_flat(sub, depth + 1, out, count, cap, expanded, search);
         }
     }
     for (size_t i = 0; i < f->entry_count; i++) {
         Entry *e = &f->entries[i];
         int match = 1;
-        if (search && search[0] != '\0') {
-            match = 0;
-            const char *p = e->text;
-            const char *q = search;
-            while (*p) {
-                if (tolower((unsigned char)*p) == tolower((unsigned char)*q)) {
-                    if (!*++q) { match = 1; break; }
-                } else {
-                    q = search;
-                }
-                p++;
-            }
+        if (is_searching) {
+            match = e->text && entry_matches_search(e->text, search);
         }
         if (!match) continue;
         if (*count >= *cap) {
