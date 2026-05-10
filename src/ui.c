@@ -487,7 +487,7 @@ void ui_draw(const App *app) {
     getmaxyx(stdscr, rows, cols);
     if (rows < 10 || cols < 30) return;
 
-    clear();
+    erase();
 
     int tab_h = 3;
     int status_h = 1;
