@@ -516,7 +516,7 @@ static char *epanel_to_json(const EPanelData *data) {
     return s;
 }
 
-static int entry_from_json(cJSON *o, Entry *e) {
+static void entry_from_json(cJSON *o, Entry *e) {
     memset(e, 0, sizeof(*e));
     cJSON *id = cJSON_GetObjectItemCaseSensitive(o, "id");
     if (cJSON_IsString(id)) strncpy(e->id, id->valuestring, UUID_STR_LEN);
@@ -525,12 +525,11 @@ static int entry_from_json(cJSON *o, Entry *e) {
     if (cJSON_IsString(text)) e->text = str_dup(text->valuestring);
     cJSON *date = cJSON_GetObjectItemCaseSensitive(o, "date");
     if (cJSON_IsString(date)) e->date = str_dup(date->valuestring);
-    return 1;
 }
 
-static int folder_from_json(cJSON *o, Folder *f);
+static void folder_from_json(cJSON *o, Folder *f);
 
-static int folder_from_json(cJSON *o, Folder *f) {
+static void folder_from_json(cJSON *o, Folder *f) {
     memset(f, 0, sizeof(*f));
     cJSON *id = cJSON_GetObjectItemCaseSensitive(o, "id");
     if (cJSON_IsString(id)) strncpy(f->id, id->valuestring, UUID_STR_LEN);
@@ -546,7 +545,8 @@ static int folder_from_json(cJSON *o, Folder *f) {
                 f->entry_cap = f->entry_cap ? f->entry_cap * 2 : 4;
                 f->entries = realloc(f->entries, f->entry_cap * sizeof(Entry));
             }
-            if (entry_from_json(e, &f->entries[f->entry_count])) f->entry_count++;
+            entry_from_json(e, &f->entries[f->entry_count]);
+            f->entry_count++;
         }
     }
     cJSON *subfolders = cJSON_GetObjectItemCaseSensitive(o, "subfolders");
@@ -558,12 +558,12 @@ static int folder_from_json(cJSON *o, Folder *f) {
                 f->subfolder_cap = f->subfolder_cap ? f->subfolder_cap * 2 : 4;
                 f->subfolders = realloc(f->subfolders, f->subfolder_cap * sizeof(Folder));
             }
-            if (folder_from_json(s, &f->subfolders[f->subfolder_count])) f->subfolder_count++;
+            folder_from_json(s, &f->subfolders[f->subfolder_count]);
+            f->subfolder_count++;
         }
     }
     cJSON *collapsed = cJSON_GetObjectItemCaseSensitive(o, "isCollapsed");
     if (cJSON_IsBool(collapsed)) f->is_collapsed = cJSON_IsTrue(collapsed);
-    return 1;
 }
 
 static int epanel_from_json(const char *json, EPanelData *data) {
@@ -1229,6 +1229,14 @@ FolderChoice *app_get_folder_choices(const App *app, const char *exclude_id, siz
     size_t n = 0, cap = 0;
     app_flattened_folder_choices(&app->data.root_folder, exclude_id, &ids, &names, &depths, &n, &cap, 0);
     FolderChoice *choices = calloc(n, sizeof(FolderChoice));
+    if (!choices) {
+        for (size_t i = 0; i < n; i++) free(ids[i]);
+        free(ids);
+        free(names);
+        free(depths);
+        *count = 0;
+        return NULL;
+    }
     for (size_t i = 0; i < n; i++) {
         strncpy(choices[i].id, ids[i], UUID_STR_LEN);
         choices[i].name = names[i];

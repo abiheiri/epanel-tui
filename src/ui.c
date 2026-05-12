@@ -515,12 +515,9 @@ void ui_draw(const App *app) {
 
     draw_status(app, rows - 1, 1, cols - 2);
 
-    if (app->popup.type != POPUP_NONE) {
-        draw_popup(app, rows, cols);
-    }
-
     /* Place cursor in the focused input field */
     if (app->popup.type != POPUP_NONE) {
+        draw_popup(app, rows, cols);
         int pw = cols * 60 / 100;
         int ph = rows * 50 / 100;
         if (pw < 40) pw = 40;

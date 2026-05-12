@@ -496,6 +496,13 @@ SafariState *safari_state_new(const char *path, int signal_pipe_write) {
     ctx->exit_pipe = exit_pipes[0];
 
     SafariState *s = calloc(1, sizeof(SafariState));
+    if (!s) {
+        free(ctx->path);
+        free(ctx);
+        close(exit_pipes[0]);
+        close(exit_pipes[1]);
+        return NULL;
+    }
     s->exit_pipe_write = exit_pipes[1];
 
     if (pthread_create(&s->thread, NULL, safari_watch_thread, ctx) != 0) {

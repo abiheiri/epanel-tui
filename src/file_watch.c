@@ -24,8 +24,6 @@ typedef struct {
 
 static void *watch_thread(void *arg) {
     WatchArgs *wa = arg;
-    int pipe_write = wa->write_fd;
-    char *path = wa->path;
 
 #ifdef __linux__
     int inotify_fd = inotify_init1(IN_CLOEXEC);
@@ -39,7 +37,7 @@ static void *watch_thread(void *arg) {
        by Syncthing and editors like vim with `backupcopy=no`). Watching the
        directory and filtering by basename survives those replace-in-place
        patterns and also handles the file not existing yet. */
-    char *dir_copy = strdup(path);
+    char *dir_copy = strdup(wa->path);
     if (!dir_copy) {
         close(inotify_fd);
         free(wa->path);
@@ -84,7 +82,7 @@ static void *watch_thread(void *arg) {
         }
         if (fire) {
             char sig = 1;
-            if (write(pipe_write, &sig, 1) != 1) break;
+            if (write(wa->write_fd, &sig, 1) != 1) break;
         }
     }
 
@@ -95,7 +93,7 @@ static void *watch_thread(void *arg) {
 
 #ifdef __APPLE__
     /* On macOS, watch the specific file with kqueue */
-    int fd = open(path, O_RDONLY);
+    int fd = open(wa->path, O_RDONLY);
     if (fd < 0) {
         free(wa->path);
         free(wa);
@@ -127,12 +125,12 @@ static void *watch_thread(void *arg) {
             break;
         }
         char sig = 1;
-        if (write(pipe_write, &sig, 1) != 1) break;
+        if (write(wa->write_fd, &sig, 1) != 1) break;
         /* If file was deleted/renamed, re-establish after a short delay */
         if (event.fflags & (NOTE_DELETE | NOTE_RENAME)) {
             close(fd);
             usleep(500000);
-            fd = open(path, O_RDONLY);
+            fd = open(wa->path, O_RDONLY);
             if (fd < 0) continue;
             EV_SET(&change, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
                    NOTE_WRITE | NOTE_EXTEND | NOTE_DELETE | NOTE_RENAME, 0, NULL);
