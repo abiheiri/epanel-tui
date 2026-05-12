@@ -247,7 +247,7 @@ static void draw_status(const App *app, int y, int x, int w) {
         hints = "Up/Down navigate * Enter open/add * Space select * n new * d delete * m move * r rename * e export * i import * ? help * Esc clear search * F1/F2/F3 tabs * Ctrl+C quit";
         break;
     case TAB_NOTES:
-        hints = "Type to edit * ? help * F1/F2/F3 tabs * Ctrl+C quit";
+        hints = "Type to edit * Ctrl+K clear * ? help * F1/F2/F3 tabs * Ctrl+C quit";
         break;
     case TAB_SETTINGS:
         hints = "Tab navigate * Enter save * ? help * F1/F2/F3 tabs * Ctrl+C quit";
@@ -314,18 +314,22 @@ static void draw_help_popup(const App *app, int y, int x, int h, int w) {
     mvaddstr(y + 7, x + 2, "Esc       Clear search / close popup");
     mvaddstr(y + 8, x + 2, "Ctrl+C    Quit");
     mvaddstr(y + 9, x + 2, "");
-    mvaddstr(y + 10, x + 2, "Links:");
-    mvaddstr(y + 11, x + 2, "Up/Down   Navigate");
-    mvaddstr(y + 12, x + 2, "Enter     Open folder or add entry");
-    mvaddstr(y + 13, x + 2, "Space     Select item");
-    mvaddstr(y + 14, x + 2, "n         New folder");
-    mvaddstr(y + 15, x + 2, "d         Delete selected");
-    mvaddstr(y + 16, x + 2, "m         Move selected");
-    mvaddstr(y + 17, x + 2, "r         Rename folder");
-    mvaddstr(y + 18, x + 2, "e         Export JSON");
-    mvaddstr(y + 19, x + 2, "i         Import JSON");
-    mvaddstr(y + 20, x + 2, "Left/Right Collapse/expand folder");
-    mvaddstr(y + 21, x + 2, "Enter/Esc/Space dismiss");
+    mvaddstr(y + 10, x + 2, "Notes:");
+    mvaddstr(y + 11, x + 2, "Type      Edit text");
+    mvaddstr(y + 12, x + 2, "Ctrl+K    Clear all");
+    mvaddstr(y + 13, x + 2, "");
+    mvaddstr(y + 14, x + 2, "Links:");
+    mvaddstr(y + 15, x + 2, "Up/Down   Navigate");
+    mvaddstr(y + 16, x + 2, "Enter     Open folder or add entry");
+    mvaddstr(y + 17, x + 2, "Space     Select item");
+    mvaddstr(y + 18, x + 2, "n         New folder");
+    mvaddstr(y + 19, x + 2, "d         Delete selected");
+    mvaddstr(y + 20, x + 2, "m         Move selected");
+    mvaddstr(y + 21, x + 2, "r         Rename folder");
+    mvaddstr(y + 22, x + 2, "e         Export JSON");
+    mvaddstr(y + 23, x + 2, "i         Import JSON");
+    mvaddstr(y + 24, x + 2, "Left/Right Collapse/expand folder");
+    mvaddstr(y + 25, x + 2, "Enter/Esc/Space dismiss");
     popup_attroff();
 }
 

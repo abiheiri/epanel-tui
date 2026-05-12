@@ -1652,6 +1652,11 @@ static void app_handle_notes(App *app, int ch, int *changed) {
         str_append_char(&app->notes_text, '\n');
     } else if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b') {
         str_pop_char(&app->notes_text);
+    } else if (ch == 11) { /* Ctrl+K */
+        if (app->notes_text) {
+            free(app->notes_text);
+            app->notes_text = NULL;
+        }
     }
     size_t new_len = app->notes_text ? strlen(app->notes_text) : 0;
     if (new_len != old_len) {
