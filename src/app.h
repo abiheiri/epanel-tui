@@ -172,7 +172,6 @@ void app_free(App *app);
 int app_load(App *app);
 int app_save(App *app);
 int app_reload(App *app);
-void app_data_changed(App *app);
 
 /* Timers: return 1 if something changed and needs redraw */
 int app_check_timers(App *app);
@@ -186,41 +185,17 @@ void app_rebuild_flat_items(App *app);
 
 /* Helpers */
 char *expand_tilde(const char *path);
-char *config_path(void);
-char *current_iso_datetime(void);
 
 /* Folder/entry manipulation */
-Folder *find_folder(Folder *root, const char *id);
-Entry *find_entry(Folder *root, const char *id);
-void folder_add_entry(Folder *f, const char *text);
 void folder_free(Folder *f);
-void folder_add_subfolder(Folder *f, const char *name);
-void delete_folder_recursive(Folder *root, const char *id);
-void delete_entry_recursive(Folder *root, const char *id);
-void move_folder(Folder *root, const char *item_id, const char *target_id);
-void move_entry(Folder *root, const char *item_id, const char *target_id);
-
-/* Popup helpers */
-void popup_clear(Popup *p);
-void popup_set_alert(Popup *p, const char *msg);
 
 /* IdSet helpers */
 int idset_contains(const IdSet *set, const char *id);
-void idset_add(IdSet *set, const char *id);
-void idset_remove(IdSet *set, const char *id);
-void idset_clear(IdSet *set);
-
-FolderChoice *app_get_folder_choices(const App *app, const char *exclude_id, size_t *count);
-void app_free_folder_choices(FolderChoice *choices, size_t count);
-/* Build the flattened folder list straight into a Popup's cache. Frees any
-   previous cache and repopulates. exclude_id may be NULL to include all. */
-void popup_build_choices(Popup *p, const App *app, const char *exclude_id);
 
 #ifdef __APPLE__
 void app_sync_safari_on_startup(App *app);
 void app_start_safari_sync(App *app);
 void app_apply_safari_sync(App *app, Folder *bookmark_folders, size_t bm_count, Folder *reading_list);
-int app_writeback_safari(App *app);
 #endif
 
 #endif

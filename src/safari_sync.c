@@ -321,9 +321,9 @@ int safari_writeback_plist(const char *path, Folder *root) {
 
     cJSON *children = cJSON_CreateArray();
 
-    Folder *favorites = NULL;
+    const Folder *favorites = NULL;
     Folder *bookmarks_menu = NULL;
-    Folder *reading_list = NULL;
+    const Folder *reading_list = NULL;
 
     for (size_t i = 0; i < root->subfolder_count; i++) {
         if (strcmp(root->subfolders[i].name, "Favorites") == 0) {

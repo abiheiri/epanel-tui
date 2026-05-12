@@ -76,7 +76,8 @@ static void str_delete_before(char **s, size_t pos) {
 }
 
 #ifdef __APPLE__
-void app_move_existing_to_original(App *app);
+static void app_move_existing_to_original(App *app);
+static int app_writeback_safari(App *app);
 #endif
 
 static int str_eq(const char *a, const char *b) {
@@ -106,7 +107,7 @@ char *expand_tilde(const char *path) {
     return str_dup(path);
 }
 
-char *config_path(void) {
+static char *config_path(void) {
     const char *xdg = getenv("XDG_CONFIG_HOME");
     if (xdg) {
         size_t n = strlen(xdg);
@@ -130,11 +131,11 @@ char *config_path(void) {
     return str_dup(".");
 }
 
-char *current_iso_datetime(void) {
+static char *current_iso_datetime(void) {
     time_t now = time(NULL);
-    struct tm *tm = gmtime(&now);
     char *buf = malloc(32);
     if (buf) {
+        const struct tm *tm = gmtime(&now);
         strftime(buf, 32, "%Y-%m-%dT%H:%M:%SZ", tm);
     }
     return buf;
@@ -157,7 +158,7 @@ void folder_free(Folder *f) {
     free(f->subfolders);
 }
 
-Folder *find_folder(Folder *root, const char *id) {
+static Folder *find_folder(Folder *root, const char *id) {
     if (str_eq(root->id, id)) return root;
     for (size_t i = 0; i < root->subfolder_count; i++) {
         Folder *found = find_folder(&root->subfolders[i], id);
@@ -166,7 +167,7 @@ Folder *find_folder(Folder *root, const char *id) {
     return NULL;
 }
 
-Entry *find_entry(Folder *root, const char *id) {
+static Entry *find_entry(Folder *root, const char *id) {
     for (size_t i = 0; i < root->entry_count; i++) {
         if (str_eq(root->entries[i].id, id)) return &root->entries[i];
     }
@@ -191,7 +192,7 @@ static Entry *find_entry_with_parent(Folder *root, const char *id, Folder **out_
     return NULL;
 }
 
-void folder_add_entry(Folder *f, const char *text) {
+static void folder_add_entry(Folder *f, const char *text) {
     if (f->entry_count >= f->entry_cap) {
         f->entry_cap = f->entry_cap ? f->entry_cap * 2 : 4;
         f->entries = realloc(f->entries, f->entry_cap * sizeof(Entry));
@@ -203,7 +204,7 @@ void folder_add_entry(Folder *f, const char *text) {
     e->date = current_iso_datetime();
 }
 
-void folder_add_subfolder(Folder *f, const char *name) {
+static void folder_add_subfolder(Folder *f, const char *name) {
     if (f->subfolder_count >= f->subfolder_cap) {
         f->subfolder_cap = f->subfolder_cap ? f->subfolder_cap * 2 : 4;
         f->subfolders = realloc(f->subfolders, f->subfolder_cap * sizeof(Folder));
@@ -238,21 +239,21 @@ static void folder_remove_subfolder(Folder *f, const char *id) {
     }
 }
 
-void delete_folder_recursive(Folder *root, const char *id) {
+static void delete_folder_recursive(Folder *root, const char *id) {
     folder_remove_subfolder(root, id);
     for (size_t i = 0; i < root->subfolder_count; i++) {
         delete_folder_recursive(&root->subfolders[i], id);
     }
 }
 
-void delete_entry_recursive(Folder *root, const char *id) {
+static void delete_entry_recursive(Folder *root, const char *id) {
     folder_remove_entry(root, id);
     for (size_t i = 0; i < root->subfolder_count; i++) {
         delete_entry_recursive(&root->subfolders[i], id);
     }
 }
 
-void move_folder(Folder *root, const char *item_id, const char *target_id) {
+static void move_folder(Folder *root, const char *item_id, const char *target_id) {
     Folder *src_parent = NULL;
     size_t src_idx = 0;
     for (size_t i = 0; i < root->subfolder_count; i++) {
@@ -275,9 +276,9 @@ void move_folder(Folder *root, const char *item_id, const char *target_id) {
     src_parent->subfolder_count--;
 }
 
-void move_entry(Folder *root, const char *item_id, const char *target_id) {
+static void move_entry(Folder *root, const char *item_id, const char *target_id) {
     Folder *src = NULL;
-    Entry *e = find_entry_with_parent(root, item_id, &src);
+    const Entry *e = find_entry_with_parent(root, item_id, &src);
     if (!e || !src) return;
     Folder *target = find_folder(root, target_id);
     if (!target || src == target) return;
@@ -308,7 +309,7 @@ int idset_contains(const IdSet *set, const char *id) {
     return 0;
 }
 
-void idset_add(IdSet *set, const char *id) {
+static void idset_add(IdSet *set, const char *id) {
     if (idset_contains(set, id)) return;
     if (set->count >= set->cap) {
         set->cap = set->cap ? set->cap * 2 : 4;
@@ -317,7 +318,7 @@ void idset_add(IdSet *set, const char *id) {
     set->ids[set->count++] = str_dup(id);
 }
 
-void idset_remove(IdSet *set, const char *id) {
+static void idset_remove(IdSet *set, const char *id) {
     for (size_t i = 0; i < set->count; i++) {
         if (str_eq(set->ids[i], id)) {
             free(set->ids[i]);
@@ -329,7 +330,7 @@ void idset_remove(IdSet *set, const char *id) {
     }
 }
 
-void idset_clear(IdSet *set) {
+static void idset_clear(IdSet *set) {
     for (size_t i = 0; i < set->count; i++) free(set->ids[i]);
     free(set->ids);
     set->ids = NULL;
@@ -341,7 +342,7 @@ void idset_clear(IdSet *set) {
 /* Popup                                                                      */
 /* -------------------------------------------------------------------------- */
 
-void popup_clear(Popup *p) {
+static void popup_clear(Popup *p) {
     free(p->text);
     free(p->selected_folder);
     free(p->selected_parent);
@@ -354,7 +355,9 @@ void popup_clear(Popup *p) {
     p->type = POPUP_NONE;
 }
 
-void popup_build_choices(Popup *p, const App *app, const char *exclude_id) {
+static FolderChoice *app_get_folder_choices(const App *app, const char *exclude_id, size_t *count);
+
+static void popup_build_choices(Popup *p, const App *app, const char *exclude_id) {
     for (size_t i = 0; i < p->choice_count; i++) free(p->choices[i].name);
     free(p->choices);
     p->choices = app_get_folder_choices(app, exclude_id, &p->choice_count);
@@ -364,7 +367,7 @@ void popup_build_choices(Popup *p, const App *app, const char *exclude_id) {
    a Popup field holding the currently-selected UUID; it's freed and replaced
    with a new str_dup of the neighboring choice's id. No-op if the cache is
    empty or the current id isn't in the cache. */
-static void popup_navigate_choices(Popup *p, int ch, char **sel) {
+static void popup_navigate_choices(const Popup *p, int ch, char **sel) {
     if (!p->choices || p->choice_count == 0 || !*sel) return;
     ssize_t idx = -1;
     for (size_t i = 0; i < p->choice_count; i++) {
@@ -377,7 +380,7 @@ static void popup_navigate_choices(Popup *p, int ch, char **sel) {
     *sel = str_dup(p->choices[idx].id);
 }
 
-void popup_set_alert(Popup *p, const char *msg) {
+static void popup_set_alert(Popup *p, const char *msg) {
     popup_clear(p);
     p->type = POPUP_ALERT;
     p->text = str_dup(msg);
@@ -441,7 +444,7 @@ static void rebuild_flat(Folder *f, size_t depth, FlatItem **out, size_t *count,
         }
     }
     for (size_t i = 0; i < f->entry_count; i++) {
-        Entry *e = &f->entries[i];
+        const Entry *e = &f->entries[i];
         int match = 1;
         if (is_searching) {
             match = e->text && entry_matches_search(e->text, search);
@@ -516,31 +519,31 @@ static char *epanel_to_json(const EPanelData *data) {
     return s;
 }
 
-static void entry_from_json(cJSON *o, Entry *e) {
+static void entry_from_json(const cJSON *o, Entry *e) {
     memset(e, 0, sizeof(*e));
-    cJSON *id = cJSON_GetObjectItemCaseSensitive(o, "id");
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(o, "id");
     if (cJSON_IsString(id)) strncpy(e->id, id->valuestring, UUID_STR_LEN);
     if (e->id[0] == '\0') uuid_gen(e->id);
-    cJSON *text = cJSON_GetObjectItemCaseSensitive(o, "text");
+    const cJSON *text = cJSON_GetObjectItemCaseSensitive(o, "text");
     if (cJSON_IsString(text)) e->text = str_dup(text->valuestring);
-    cJSON *date = cJSON_GetObjectItemCaseSensitive(o, "date");
+    const cJSON *date = cJSON_GetObjectItemCaseSensitive(o, "date");
     if (cJSON_IsString(date)) e->date = str_dup(date->valuestring);
 }
 
-static void folder_from_json(cJSON *o, Folder *f);
+static void folder_from_json(const cJSON *o, Folder *f);
 
-static void folder_from_json(cJSON *o, Folder *f) {
+static void folder_from_json(const cJSON *o, Folder *f) {
     memset(f, 0, sizeof(*f));
-    cJSON *id = cJSON_GetObjectItemCaseSensitive(o, "id");
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(o, "id");
     if (cJSON_IsString(id)) strncpy(f->id, id->valuestring, UUID_STR_LEN);
     if (f->id[0] == '\0') uuid_gen(f->id);
-    cJSON *name = cJSON_GetObjectItemCaseSensitive(o, "name");
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(o, "name");
     if (cJSON_IsString(name)) f->name = str_dup(name->valuestring);
-    cJSON *entries = cJSON_GetObjectItemCaseSensitive(o, "entries");
+    const cJSON *entries = cJSON_GetObjectItemCaseSensitive(o, "entries");
     if (cJSON_IsArray(entries)) {
         size_t n = cJSON_GetArraySize(entries);
         for (size_t i = 0; i < n; i++) {
-            cJSON *e = cJSON_GetArrayItem(entries, i);
+            const cJSON *e = cJSON_GetArrayItem(entries, i);
             if (f->entry_count >= f->entry_cap) {
                 f->entry_cap = f->entry_cap ? f->entry_cap * 2 : 4;
                 f->entries = realloc(f->entries, f->entry_cap * sizeof(Entry));
@@ -549,11 +552,11 @@ static void folder_from_json(cJSON *o, Folder *f) {
             f->entry_count++;
         }
     }
-    cJSON *subfolders = cJSON_GetObjectItemCaseSensitive(o, "subfolders");
+    const cJSON *subfolders = cJSON_GetObjectItemCaseSensitive(o, "subfolders");
     if (cJSON_IsArray(subfolders)) {
         size_t n = cJSON_GetArraySize(subfolders);
         for (size_t i = 0; i < n; i++) {
-            cJSON *s = cJSON_GetArrayItem(subfolders, i);
+            const cJSON *s = cJSON_GetArrayItem(subfolders, i);
             if (f->subfolder_count >= f->subfolder_cap) {
                 f->subfolder_cap = f->subfolder_cap ? f->subfolder_cap * 2 : 4;
                 f->subfolders = realloc(f->subfolders, f->subfolder_cap * sizeof(Folder));
@@ -562,16 +565,16 @@ static void folder_from_json(cJSON *o, Folder *f) {
             f->subfolder_count++;
         }
     }
-    cJSON *collapsed = cJSON_GetObjectItemCaseSensitive(o, "isCollapsed");
+    const cJSON *collapsed = cJSON_GetObjectItemCaseSensitive(o, "isCollapsed");
     if (cJSON_IsBool(collapsed)) f->is_collapsed = cJSON_IsTrue(collapsed);
 }
 
 static int epanel_from_json(const char *json, EPanelData *data) {
     cJSON *root = cJSON_Parse(json);
     if (!root) return 0;
-    cJSON *rf = cJSON_GetObjectItemCaseSensitive(root, "rootFolder");
+    const cJSON *rf = cJSON_GetObjectItemCaseSensitive(root, "rootFolder");
     if (rf) folder_from_json(rf, &data->root_folder);
-    cJSON *notes = cJSON_GetObjectItemCaseSensitive(root, "notes");
+    const cJSON *notes = cJSON_GetObjectItemCaseSensitive(root, "notes");
     if (cJSON_IsString(notes)) data->notes = str_dup(notes->valuestring);
     cJSON_Delete(root);
     return 1;
@@ -660,7 +663,7 @@ void app_init(App *app) {
 
 #ifdef __APPLE__
     app->safari_sync_enabled = 0;
-    char *home = getenv("HOME");
+    const char *home = getenv("HOME");
     if (home) {
         size_t n = strlen(home);
         char *p = malloc(n + 34);
@@ -712,7 +715,7 @@ int app_load(App *app) {
             char *eq = strchr(line, '=');
             if (!eq) continue;
             *eq = '\0';
-            char *key = line;
+            const char *key = line;
             char *val = eq + 1;
             while (*val == ' ' || *val == '\t') val++;
             size_t vlen = strlen(val);
@@ -973,7 +976,7 @@ static long timespec_diff_ms(const struct timespec *a, const struct timespec *b)
 }
 #endif
 
-void app_data_changed(App *app) {
+static void app_data_changed(App *app) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     app->save_after.tv_sec = now.tv_sec + 1;
@@ -1119,12 +1122,12 @@ static void app_delete_selected(App *app) {
     size_t entry_count = 0, folder_count = 0;
     for (size_t i = 0; i < app->selected_item_ids.count; i++) {
         const char *id = app->selected_item_ids.ids[i];
-        Entry *e = find_entry(&app->data.root_folder, id);
+        const Entry *e = find_entry(&app->data.root_folder, id);
         if (e) {
             entry_count++;
             continue;
         }
-        Folder *f = find_folder(&app->data.root_folder, id);
+        const Folder *f = find_folder(&app->data.root_folder, id);
         if (f) {
             folder_count++;  /* the selected folder itself */
             count_folder_descendants(f, &folder_count, &entry_count);
@@ -1165,7 +1168,7 @@ static void app_init_rename_selected(App *app) {
     if (app->links_cursor < 0 || (size_t)app->links_cursor >= app->flat_count) return;
     const char *id = app->flat_items[app->links_cursor].id;
     if (app->flat_items[app->links_cursor].kind != ITEM_FOLDER) return;
-    Folder *f = find_folder(&app->data.root_folder, id);
+    const Folder *f = find_folder(&app->data.root_folder, id);
     if (!f) return;
     popup_clear(&app->popup);
     app->popup.type = POPUP_RENAME_FOLDER;
@@ -1178,17 +1181,17 @@ static int app_open_entry(const char *text) {
     /* Launch via fork+exec, not system(), so `text` is a single argv element and
        can't be interpreted by a shell. Double-fork so the grandchild is orphaned
        to init and we don't leave zombies. */
-#ifdef __APPLE__
-    const char *cmd = "open";
-#else
-    const char *cmd = "xdg-open";
-#endif
     pid_t pid = fork();
     if (pid < 0) return -1;
     if (pid == 0) {
         pid_t pid2 = fork();
         if (pid2 < 0) _exit(127);
         if (pid2 == 0) {
+#ifdef __APPLE__
+            const char *cmd = "open";
+#else
+            const char *cmd = "xdg-open";
+#endif
             int devnull = open("/dev/null", O_WRONLY);
             if (devnull >= 0) {
                 dup2(devnull, STDOUT_FILENO);
@@ -1250,10 +1253,6 @@ FolderChoice *app_get_folder_choices(const App *app, const char *exclude_id, siz
     return choices;
 }
 
-void app_free_folder_choices(FolderChoice *choices, size_t count) {
-    for (size_t i = 0; i < count; i++) free(choices[i].name);
-    free(choices);
-}
 
 static void app_add_entry_to_folder(App *app, const char *text, const char *folder_id) {
     Folder *f = find_folder(&app->data.root_folder, folder_id);
@@ -1309,7 +1308,7 @@ static void app_handle_popup(App *app, int ch, int *changed) {
         if (ch == KEY_UP || ch == KEY_DOWN) {
             popup_navigate_choices(p, ch, &p->selected_parent);
         } else if (ch == '\n' || ch == KEY_ENTER) {
-            char *trimmed = p->text ? p->text : "";
+            const char *trimmed = p->text ? p->text : "";
             while (isspace((unsigned char)*trimmed)) trimmed++;
             size_t len = strlen(trimmed);
             while (len > 0 && isspace((unsigned char)trimmed[len - 1])) len--;
@@ -1339,7 +1338,7 @@ static void app_handle_popup(App *app, int ch, int *changed) {
     }
     case POPUP_RENAME_FOLDER: {
         if (ch == '\n' || ch == KEY_ENTER) {
-            char *trimmed = p->text ? p->text : "";
+            const char *trimmed = p->text ? p->text : "";
             while (isspace((unsigned char)*trimmed)) trimmed++;
             size_t len = strlen(trimmed);
             while (len > 0 && isspace((unsigned char)trimmed[len - 1])) len--;
@@ -1547,7 +1546,7 @@ static void app_handle_links(App *app, int ch, int *changed) {
             if (app->flat_count > 0 && app->links_cursor < 0) app->links_cursor = 0;
             *changed = 1;
         } else if (ch == '\n' || ch == KEY_ENTER) {
-            char *trimmed = app->search_input;
+            const char *trimmed = app->search_input;
             while (isspace((unsigned char)*trimmed)) trimmed++;
             size_t len = strlen(trimmed);
             while (len > 0 && isspace((unsigned char)trimmed[len - 1])) len--;
@@ -1631,16 +1630,16 @@ static void app_handle_links(App *app, int ch, int *changed) {
             *changed = 1;
         } else if (ch == KEY_RIGHT) {
             if (app->links_cursor >= 0 && (size_t)app->links_cursor < app->flat_count) {
-                const char *id = app->flat_items[app->links_cursor].id;
                 if (app->flat_items[app->links_cursor].kind == ITEM_FOLDER) {
+                    const char *id = app->flat_items[app->links_cursor].id;
                     app_expand_folder(app, id);
                     *changed = 1;
                 }
             }
         } else if (ch == KEY_LEFT) {
             if (app->links_cursor >= 0 && (size_t)app->links_cursor < app->flat_count) {
-                const char *id = app->flat_items[app->links_cursor].id;
                 if (app->flat_items[app->links_cursor].kind == ITEM_FOLDER) {
+                    const char *id = app->flat_items[app->links_cursor].id;
                     app_collapse_folder(app, id);
                     *changed = 1;
                 }
@@ -1866,7 +1865,7 @@ int app_handle_key(App *app, int ch) {
 /* Safari sync helpers (called from app.c to keep struct knowledge here)      */
 /* -------------------------------------------------------------------------- */
 
-void app_move_existing_to_original(App *app) {
+static void app_move_existing_to_original(App *app) {
     Folder *root = &app->data.root_folder;
     if (root->entry_count == 0 && root->subfolder_count == 0) return;
     for (size_t i = 0; i < root->subfolder_count; i++) {
@@ -1950,7 +1949,7 @@ void app_apply_safari_sync(App *app, Folder *bookmark_folders, size_t bm_count, 
     app->last_sync_date = current_iso_datetime();
 }
 
-int app_writeback_safari(App *app) {
+static int app_writeback_safari(App *app) {
     return safari_writeback_plist(app->safari_sync_path, &app->data.root_folder);
 }
 

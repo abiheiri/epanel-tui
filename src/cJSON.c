@@ -1595,8 +1595,7 @@ fail:
 static cJSON_bool print_array(const cJSON * const item, printbuffer * const output_buffer)
 {
     unsigned char *output_pointer = NULL;
-    size_t length = 0;
-    cJSON *current_element = item->child;
+    const cJSON *current_element = item->child;
 
     if (output_buffer == NULL)
     {
@@ -1629,7 +1628,7 @@ static cJSON_bool print_array(const cJSON * const item, printbuffer * const outp
         update_offset(output_buffer);
         if (current_element->next)
         {
-            length = (size_t) (output_buffer->format ? 2 : 1);
+            size_t length = (size_t) (output_buffer->format ? 2 : 1);
             output_pointer = ensure(output_buffer, length + 1);
             if (output_pointer == NULL)
             {
@@ -1898,7 +1897,7 @@ static cJSON_bool print_object(const cJSON * const item, printbuffer * const out
 /* Get Array size/item / object item. */
 CJSON_PUBLIC(int) cJSON_GetArraySize(const cJSON *array)
 {
-    cJSON *child = NULL;
+    const cJSON *child = NULL;
     size_t size = 0;
 
     if (array == NULL)
@@ -2779,7 +2778,7 @@ CJSON_PUBLIC(cJSON *) cJSON_CreateStringArray(const char *const *strings, int co
 }
 
 /* Duplication */
-cJSON * cJSON_Duplicate_rec(const cJSON *item, size_t depth, cJSON_bool recurse);
+static cJSON * cJSON_Duplicate_rec(const cJSON *item, size_t depth, cJSON_bool recurse);
 
 CJSON_PUBLIC(cJSON *) cJSON_Duplicate(const cJSON *item, cJSON_bool recurse)
 {
@@ -2789,7 +2788,7 @@ CJSON_PUBLIC(cJSON *) cJSON_Duplicate(const cJSON *item, cJSON_bool recurse)
 cJSON * cJSON_Duplicate_rec(const cJSON *item, size_t depth, cJSON_bool recurse)
 {
     cJSON *newitem = NULL;
-    cJSON *child = NULL;
+    const cJSON *child = NULL;
     cJSON *next = NULL;
     cJSON *newchild = NULL;
 
@@ -3129,8 +3128,8 @@ CJSON_PUBLIC(cJSON_bool) cJSON_Compare(const cJSON * const a, const cJSON * cons
 
         case cJSON_Array:
         {
-            cJSON *a_element = a->child;
-            cJSON *b_element = b->child;
+            const cJSON *a_element = a->child;
+            const cJSON *b_element = b->child;
 
             for (; (a_element != NULL) && (b_element != NULL);)
             {
@@ -3153,8 +3152,8 @@ CJSON_PUBLIC(cJSON_bool) cJSON_Compare(const cJSON * const a, const cJSON * cons
 
         case cJSON_Object:
         {
-            cJSON *a_element = NULL;
-            cJSON *b_element = NULL;
+            const cJSON *a_element = NULL;
+            const cJSON *b_element = NULL;
             cJSON_ArrayForEach(a_element, a)
             {
                 /* TODO This has O(n^2) runtime, which is horrible! */
@@ -3202,5 +3201,4 @@ CJSON_PUBLIC(void *) cJSON_malloc(size_t size)
 CJSON_PUBLIC(void) cJSON_free(void *object)
 {
     global_hooks.deallocate(object);
-    object = NULL;
 }

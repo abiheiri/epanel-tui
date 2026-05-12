@@ -45,10 +45,6 @@ void ui_shutdown(void) {
     endwin();
 }
 
-void ui_get_size(int *rows, int *cols) {
-    getmaxyx(stdscr, *rows, *cols);
-}
-
 static void draw_box_title(int y, int x, int h, int w, const char *title) {
     mvaddch(y, x, ACS_ULCORNER);
     mvaddch(y, x + w - 1, ACS_URCORNER);
@@ -118,7 +114,6 @@ static void draw_links(const App *app, int y, int x, int h, int w) {
     /* Simple scroll: ensure cursor is visible */
     g_scroll_offset = 0;
     if (app->links_cursor >= 0) {
-        if (app->links_cursor < g_scroll_offset) g_scroll_offset = (int)app->links_cursor;
         if (app->links_cursor >= g_scroll_offset + visible_rows) g_scroll_offset = (int)app->links_cursor - visible_rows + 1;
     }
     if (g_scroll_offset < 0) g_scroll_offset = 0;

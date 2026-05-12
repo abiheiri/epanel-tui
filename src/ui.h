@@ -6,6 +6,4 @@
 void ui_init(void);
 void ui_shutdown(void);
 void ui_draw(const App *app);
-void ui_get_size(int *rows, int *cols);
-
 #endif

@@ -87,8 +87,8 @@ static int fetch_version_web(char **out_version) {
         return -1;
     }
 
-    char *start = tag + 5; /* skip "/tag/" */
-    char *end = start;
+    const char *start = tag + 5; /* skip "/tag/" */
+    const char *end = start;
     while (*end && *end != '\r' && *end != '\n' && *end != ' ') end++;
 
     size_t len = end - start;
@@ -266,14 +266,14 @@ static int update_via_api(const char *current_version, const char *target_triple
         return -1;
     }
 
-    cJSON *message = cJSON_GetObjectItemCaseSensitive(root, "message");
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(root, "message");
     if (cJSON_IsString(message)) {
         fprintf(stderr, "GitHub API error: %s\n", message->valuestring);
         cJSON_Delete(root);
         return -1;
     }
 
-    cJSON *tag_name = cJSON_GetObjectItemCaseSensitive(root, "tag_name");
+    const cJSON *tag_name = cJSON_GetObjectItemCaseSensitive(root, "tag_name");
     if (!cJSON_IsString(tag_name)) {
         fprintf(stderr, "GitHub API response missing version tag.\n");
         cJSON_Delete(root);
@@ -286,7 +286,7 @@ static int update_via_api(const char *current_version, const char *target_triple
         return 1;
     }
 
-    cJSON *assets = cJSON_GetObjectItemCaseSensitive(root, "assets");
+    const cJSON *assets = cJSON_GetObjectItemCaseSensitive(root, "assets");
     if (!cJSON_IsArray(assets)) {
         fprintf(stderr, "Latest release has no downloadable assets.\n");
         cJSON_Delete(root);
@@ -300,9 +300,9 @@ static int update_via_api(const char *current_version, const char *target_triple
     char *download_url = NULL;
     size_t n = cJSON_GetArraySize(assets);
     for (size_t i = 0; i < n; i++) {
-        cJSON *asset = cJSON_GetArrayItem(assets, i);
-        cJSON *name = cJSON_GetObjectItemCaseSensitive(asset, "name");
-        cJSON *url = cJSON_GetObjectItemCaseSensitive(asset,
+        const cJSON *asset = cJSON_GetArrayItem(assets, i);
+        const cJSON *name = cJSON_GetObjectItemCaseSensitive(asset, "name");
+        const cJSON *url = cJSON_GetObjectItemCaseSensitive(asset,
             "browser_download_url");
         if (cJSON_IsString(name) && cJSON_IsString(url) &&
             strcmp(name->valuestring, expected_name) == 0) {

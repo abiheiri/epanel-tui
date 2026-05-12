@@ -74,7 +74,7 @@ static void *watch_thread(void *arg) {
         }
         int fire = 0;
         for (ssize_t off = 0; off < n; ) {
-            struct inotify_event *ev = (struct inotify_event *)(buf + off);
+            const struct inotify_event *ev = (struct inotify_event *)(buf + off);
             if (ev->len > 0 && strcmp(ev->name, watch_name) == 0) {
                 fire = 1;
             }
@@ -177,8 +177,4 @@ int file_watch_start(const char *path) {
     return pipe_fds[0];
 }
 
-void file_watch_stop(int write_fd) {
-    if (write_fd >= 0) {
-        close(write_fd);
-    }
-}
+
