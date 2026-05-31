@@ -114,6 +114,18 @@ typedef struct {
 } FlatItem;
 
 typedef struct {
+    const char *key;    /* points into Folder.id or Entry.id — owned by the tree */
+    void       *ptr;    /* Folder* or Entry* */
+    void       *parent; /* parent Folder*, valid only for entries */
+} IdMapSlot;
+
+typedef struct {
+    IdMapSlot *slots;
+    size_t     cap;   /* always a power of two */
+    size_t     cnt;
+} IdMap;
+
+typedef struct {
     char **ids;
     size_t count;
     size_t cap;
@@ -167,6 +179,9 @@ typedef struct {
     /* file watcher state */
     int watch_pipe_write;
     int need_reload;
+
+    /* ID → pointer hashmap for O(1) tree lookups */
+    IdMap id_map;
 } App;
 
 void app_init(App *app);

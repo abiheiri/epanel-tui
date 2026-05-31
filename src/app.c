@@ -164,6 +164,134 @@ static char *current_iso_datetime(void) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* ID → pointer hashmap  (open addressing, FNV-1a, power-of-2 cap)            */
+/* -------------------------------------------------------------------------- */
+
+#define IDMAP_EMPTY      ((void *)0)
+#define IDMAP_TOMBSTONE  ((void *)-1)
+
+static uint32_t idmap_hash(const char *s) {
+    uint32_t h = 2166136261u;
+    for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u;
+    return h;
+}
+
+static void idmap_grow(IdMap *m) {
+    size_t old_cap = m->cap;
+    IdMapSlot *old = m->slots;
+    m->cap  = m->cap ? m->cap * 2 : 64;
+    m->slots = calloc(m->cap, sizeof(IdMapSlot));
+    m->cnt   = 0;
+    size_t mask = m->cap - 1;
+    for (size_t i = 0; i < old_cap; i++) {
+        if (!old[i].ptr || old[i].ptr == IDMAP_TOMBSTONE) continue;
+        uint32_t h = idmap_hash(old[i].key);
+        for (size_t j = 0; ; j++) {
+            size_t idx = (h + j) & mask;
+            if (!m->slots[idx].ptr) {
+                m->slots[idx] = old[i];
+                m->cnt++;
+                break;
+            }
+        }
+    }
+    free(old);
+}
+
+static void idmap_add(IdMap *m, const char *key, void *ptr, void *parent) {
+    if (!m->cap) { m->cap = 64; m->slots = calloc(64, sizeof(IdMapSlot)); }
+    if (m->cnt * 2 >= m->cap) idmap_grow(m);
+    size_t mask = m->cap - 1;
+    uint32_t h  = idmap_hash(key);
+    for (size_t i = 0; ; i++) {
+        size_t idx = (h + i) & mask;
+        if (!m->slots[idx].ptr || m->slots[idx].ptr == IDMAP_TOMBSTONE) {
+            m->slots[idx].key    = key;
+            m->slots[idx].ptr    = ptr;
+            m->slots[idx].parent = parent;
+            m->cnt++;
+            return;
+        }
+        if (strcmp(m->slots[idx].key, key) == 0) {
+            /* Update existing entry (e.g. parent change on move) */
+            m->slots[idx].ptr    = ptr;
+            m->slots[idx].parent = parent;
+            return;
+        }
+    }
+}
+
+static void idmap_remove(IdMap *m, const char *key) {
+    if (!m->slots || !m->cap) return;
+    size_t mask = m->cap - 1;
+    uint32_t h  = idmap_hash(key);
+    for (size_t i = 0; ; i++) {
+        size_t idx = (h + i) & mask;
+        if (!m->slots[idx].ptr) return; /* not found */
+        if (m->slots[idx].ptr != IDMAP_TOMBSTONE &&
+            strcmp(m->slots[idx].key, key) == 0) {
+            m->slots[idx].key = NULL;
+            m->slots[idx].ptr = IDMAP_TOMBSTONE;
+            m->slots[idx].parent = NULL;
+            m->cnt--;
+            return;
+        }
+    }
+}
+
+static void *idmap_find(IdMap *m, const char *key) {
+    if (!m->slots || !m->cap) return NULL;
+    size_t mask = m->cap - 1;
+    uint32_t h  = idmap_hash(key);
+    for (size_t i = 0; ; i++) {
+        size_t idx = (h + i) & mask;
+        if (!m->slots[idx].ptr) return NULL;
+        if (m->slots[idx].ptr != IDMAP_TOMBSTONE &&
+            strcmp(m->slots[idx].key, key) == 0)
+            return m->slots[idx].ptr;
+    }
+}
+
+/* Returns parent Folder* via out_parent, or NULL if the entry pointer is not an entry. */
+static void *idmap_find_with_parent(IdMap *m, const char *key, Folder **out_parent) {
+    if (!m->slots || !m->cap) return NULL;
+    size_t mask = m->cap - 1;
+    uint32_t h  = idmap_hash(key);
+    for (size_t i = 0; ; i++) {
+        size_t idx = (h + i) & mask;
+        if (!m->slots[idx].ptr) return NULL;
+        if (m->slots[idx].ptr != IDMAP_TOMBSTONE &&
+            strcmp(m->slots[idx].key, key) == 0) {
+            *out_parent = (Folder *)m->slots[idx].parent;
+            return m->slots[idx].ptr;
+        }
+    }
+}
+
+/* Recursively index a folder and all its contents into the hashmap. */
+static void idmap_build_folder(IdMap *m, Folder *f) {
+    idmap_add(m, f->id, f, NULL);
+    for (size_t i = 0; i < f->entry_count; i++)
+        idmap_add(m, f->entries[i].id, &f->entries[i], f);
+    for (size_t i = 0; i < f->subfolder_count; i++)
+        idmap_build_folder(m, &f->subfolders[i]);
+}
+
+/* Recursively remove a subtree from the hashmap before freeing. */
+static void idmap_remove_subtree(IdMap *m, Folder *f) {
+    idmap_remove(m, f->id);
+    for (size_t i = 0; i < f->entry_count; i++)
+        idmap_remove(m, f->entries[i].id);
+    for (size_t i = 0; i < f->subfolder_count; i++)
+        idmap_remove_subtree(m, &f->subfolders[i]);
+}
+
+static void idmap_free(IdMap *m) {
+    free(m->slots);
+    memset(m, 0, sizeof(*m));
+}
+
+/* -------------------------------------------------------------------------- */
 /* Folder / entry helpers                                                     */
 /* -------------------------------------------------------------------------- */
 
@@ -180,41 +308,19 @@ void folder_free(Folder *f) {
     free(f->subfolders);
 }
 
-static Folder *find_folder(Folder *root, const char *id) {
-    if (str_eq(root->id, id)) return root;
-    for (size_t i = 0; i < root->subfolder_count; i++) {
-        Folder *found = find_folder(&root->subfolders[i], id);
-        if (found) return found;
-    }
-    return NULL;
+static Folder *find_folder(IdMap *m, const char *id) {
+    return (Folder *)idmap_find(m, id);
 }
 
-static Entry *find_entry(Folder *root, const char *id) {
-    for (size_t i = 0; i < root->entry_count; i++) {
-        if (str_eq(root->entries[i].id, id)) return &root->entries[i];
-    }
-    for (size_t i = 0; i < root->subfolder_count; i++) {
-        Entry *found = find_entry(&root->subfolders[i], id);
-        if (found) return found;
-    }
-    return NULL;
+static Entry *find_entry(IdMap *m, const char *id) {
+    return (Entry *)idmap_find(m, id);
 }
 
-static Entry *find_entry_with_parent(Folder *root, const char *id, Folder **out_parent) {
-    for (size_t i = 0; i < root->entry_count; i++) {
-        if (str_eq(root->entries[i].id, id)) {
-            *out_parent = root;
-            return &root->entries[i];
-        }
-    }
-    for (size_t i = 0; i < root->subfolder_count; i++) {
-        Entry *found = find_entry_with_parent(&root->subfolders[i], id, out_parent);
-        if (found) return found;
-    }
-    return NULL;
+static Entry *find_entry_with_parent(IdMap *m, const char *id, Folder **out_parent) {
+    return (Entry *)idmap_find_with_parent(m, id, out_parent);
 }
 
-static void folder_add_entry(Folder *f, const char *text) {
+static void folder_add_entry(Folder *f, const char *text, IdMap *m) {
     if (f->entry_count >= f->entry_cap) {
         f->entry_cap = f->entry_cap ? f->entry_cap * 2 : 4;
         f->entries = realloc(f->entries, f->entry_cap * sizeof(Entry));
@@ -224,9 +330,10 @@ static void folder_add_entry(Folder *f, const char *text) {
     uuid_gen(e->id);
     e->text = str_dup(text);
     e->date = current_iso_datetime();
+    idmap_add(m, e->id, e, f);
 }
 
-static void folder_add_subfolder(Folder *f, const char *name) {
+static void folder_add_subfolder(Folder *f, const char *name, IdMap *m) {
     if (f->subfolder_count >= f->subfolder_cap) {
         f->subfolder_cap = f->subfolder_cap ? f->subfolder_cap * 2 : 4;
         f->subfolders = realloc(f->subfolders, f->subfolder_cap * sizeof(Folder));
@@ -235,11 +342,13 @@ static void folder_add_subfolder(Folder *f, const char *name) {
     memset(sub, 0, sizeof(*sub));
     uuid_gen(sub->id);
     sub->name = str_dup(name);
+    idmap_add(m, sub->id, sub, NULL);
 }
 
-static void folder_remove_entry(Folder *f, const char *id) {
+static void folder_remove_entry(Folder *f, const char *id, IdMap *m) {
     for (size_t i = 0; i < f->entry_count; i++) {
         if (str_eq(f->entries[i].id, id)) {
+            idmap_remove(m, id);
             entry_free(&f->entries[i]);
             memmove(&f->entries[i], &f->entries[i + 1],
                     (f->entry_count - i - 1) * sizeof(Entry));
@@ -249,9 +358,10 @@ static void folder_remove_entry(Folder *f, const char *id) {
     }
 }
 
-static void folder_remove_subfolder(Folder *f, const char *id) {
+static void folder_remove_subfolder(Folder *f, const char *id, IdMap *m) {
     for (size_t i = 0; i < f->subfolder_count; i++) {
         if (str_eq(f->subfolders[i].id, id)) {
+            idmap_remove_subtree(m, &f->subfolders[i]);
             folder_free(&f->subfolders[i]);
             memmove(&f->subfolders[i], &f->subfolders[i + 1],
                     (f->subfolder_count - i - 1) * sizeof(Folder));
@@ -261,21 +371,21 @@ static void folder_remove_subfolder(Folder *f, const char *id) {
     }
 }
 
-static void delete_folder_recursive(Folder *root, const char *id) {
-    folder_remove_subfolder(root, id);
+static void delete_folder_recursive(Folder *root, const char *id, IdMap *m) {
+    folder_remove_subfolder(root, id, m);
     for (size_t i = 0; i < root->subfolder_count; i++) {
-        delete_folder_recursive(&root->subfolders[i], id);
+        delete_folder_recursive(&root->subfolders[i], id, m);
     }
 }
 
-static void delete_entry_recursive(Folder *root, const char *id) {
-    folder_remove_entry(root, id);
+static void delete_entry_recursive(Folder *root, const char *id, IdMap *m) {
+    folder_remove_entry(root, id, m);
     for (size_t i = 0; i < root->subfolder_count; i++) {
-        delete_entry_recursive(&root->subfolders[i], id);
+        delete_entry_recursive(&root->subfolders[i], id, m);
     }
 }
 
-static void move_folder(Folder *root, const char *item_id, const char *target_id) {
+static void move_folder(Folder *root, IdMap *m, const char *item_id, const char *target_id) {
     Folder *src_parent = NULL;
     size_t src_idx = 0;
     for (size_t i = 0; i < root->subfolder_count; i++) {
@@ -286,7 +396,7 @@ static void move_folder(Folder *root, const char *item_id, const char *target_id
         }
     }
     if (!src_parent) return;
-    Folder *target = find_folder(root, target_id);
+    Folder *target = find_folder(m, target_id);
     if (!target) return;
     if (target->subfolder_count >= target->subfolder_cap) {
         target->subfolder_cap = target->subfolder_cap ? target->subfolder_cap * 2 : 4;
@@ -298,16 +408,12 @@ static void move_folder(Folder *root, const char *item_id, const char *target_id
     src_parent->subfolder_count--;
 }
 
-static void move_entry(Folder *root, const char *item_id, const char *target_id) {
+static void move_entry(IdMap *m, const char *item_id, const char *target_id) {
     Folder *src = NULL;
-    const Entry *e = find_entry_with_parent(root, item_id, &src);
+    const Entry *e = find_entry_with_parent(m, item_id, &src);
     if (!e || !src) return;
-    Folder *target = find_folder(root, target_id);
+    Folder *target = find_folder(m, target_id);
     if (!target || src == target) return;
-    /* Shallow-copy into target (shares text/date pointers with the original slot),
-       then drop the original slot from src without freeing its contents — target
-       now owns them. `src != target`, so growing target->entries cannot disturb
-       src->entries, and `e` remains a valid index into src->entries. */
     size_t idx = (size_t)(e - src->entries);
     Entry tmp = *e;
     if (target->entry_count >= target->entry_cap) {
@@ -315,6 +421,9 @@ static void move_entry(Folder *root, const char *item_id, const char *target_id)
         target->entries = realloc(target->entries, target->entry_cap * sizeof(Entry));
     }
     target->entries[target->entry_count++] = tmp;
+    /* Update hashmap: entry moved to new parent */
+    idmap_add(m, target->entries[target->entry_count - 1].id,
+              &target->entries[target->entry_count - 1], target);
     memmove(&src->entries[idx], &src->entries[idx + 1],
             (src->entry_count - idx - 1) * sizeof(Entry));
     src->entry_count--;
@@ -930,6 +1039,7 @@ void app_free(App *app) {
     if (app->safari) safari_state_free(app->safari);
 #endif
     if (app->watch_pipe_write >= 0) close(app->watch_pipe_write);
+    idmap_free(&app->id_map);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1068,6 +1178,10 @@ int app_load(App *app) {
     free(app->notes_line_starts);
     app->notes_line_starts = NULL;
     app->notes_line_total = 0;
+
+    /* Build ID→pointer hashmap for O(1) tree lookups */
+    idmap_free(&app->id_map);
+    idmap_build_folder(&app->id_map, &app->data.root_folder);
 
     return 0;
 }
@@ -1284,6 +1398,10 @@ int app_reload(App *app) {
     app->notes_line_starts = NULL;
     app->notes_line_total = 0;
 
+    /* Rebuild ID→pointer hashmap after merge */
+    idmap_free(&app->id_map);
+    idmap_build_folder(&app->id_map, &app->data.root_folder);
+
     free(data_path);
     return 0;
 }
@@ -1402,7 +1520,7 @@ static void ensure_root_id(App *app) {
 }
 
 static void app_toggle_folder(App *app, const char *id) {
-    Folder *f = find_folder(&app->data.root_folder, id);
+    Folder *f = find_folder(&app->id_map, id);
     if (!f) return;
     f->is_collapsed = !f->is_collapsed;
     if (f->is_collapsed) {
@@ -1414,7 +1532,7 @@ static void app_toggle_folder(App *app, const char *id) {
 }
 
 static void app_expand_folder(App *app, const char *id) {
-    Folder *f = find_folder(&app->data.root_folder, id);
+    Folder *f = find_folder(&app->id_map, id);
     if (!f) return;
     f->is_collapsed = 0;
     idset_add(&app->search_expanded_folders, id);
@@ -1422,7 +1540,7 @@ static void app_expand_folder(App *app, const char *id) {
 }
 
 static void app_collapse_folder(App *app, const char *id) {
-    Folder *f = find_folder(&app->data.root_folder, id);
+    Folder *f = find_folder(&app->id_map, id);
     if (!f) return;
     f->is_collapsed = 1;
     idset_remove(&app->search_expanded_folders, id);
@@ -1458,12 +1576,12 @@ static void app_delete_selected(App *app) {
     size_t entry_count = 0, folder_count = 0;
     for (size_t i = 0; i < app->selected_item_ids.count; i++) {
         const char *id = app->selected_item_ids.ids[i];
-        const Entry *e = find_entry(&app->data.root_folder, id);
+        const Entry *e = find_entry(&app->id_map, id);
         if (e) {
             entry_count++;
             continue;
         }
-        const Folder *f = find_folder(&app->data.root_folder, id);
+        const Folder *f = find_folder(&app->id_map, id);
         if (f) {
             folder_count++;  /* the selected folder itself */
             count_folder_descendants(f, &folder_count, &entry_count);
@@ -1480,8 +1598,8 @@ static void app_delete_selected(App *app) {
 static void app_do_delete_selected(App *app) {
     for (size_t i = 0; i < app->selected_item_ids.count; i++) {
         const char *id = app->selected_item_ids.ids[i];
-        delete_entry_recursive(&app->data.root_folder, id);
-        delete_folder_recursive(&app->data.root_folder, id);
+        delete_entry_recursive(&app->data.root_folder, id, &app->id_map);
+        delete_folder_recursive(&app->data.root_folder, id, &app->id_map);
     }
     idset_clear(&app->selected_item_ids);
     app->links_cursor = -1;
@@ -1504,7 +1622,7 @@ static void app_init_rename_selected(App *app) {
     if (app->links_cursor < 0 || (size_t)app->links_cursor >= app->flat_count) return;
     const char *id = app->flat_items[app->links_cursor].id;
     if (app->flat_items[app->links_cursor].kind != ITEM_FOLDER) return;
-    const Folder *f = find_folder(&app->data.root_folder, id);
+    const Folder *f = find_folder(&app->id_map, id);
     if (!f) return;
     popup_clear(&app->popup);
     app->popup.type = POPUP_RENAME_FOLDER;
@@ -1591,21 +1709,21 @@ FolderChoice *app_get_folder_choices(const App *app, const char *exclude_id, siz
 
 
 static void app_add_entry_to_folder(App *app, const char *text, const char *folder_id) {
-    Folder *f = find_folder(&app->data.root_folder, folder_id);
+    Folder *f = find_folder(&app->id_map, folder_id);
     if (!f) f = &app->data.root_folder;
-    folder_add_entry(f, text);
+    folder_add_entry(f, text, &app->id_map);
     app_data_changed(app);
 }
 
 static void app_create_folder(App *app, const char *name, const char *parent_id) {
-    Folder *f = find_folder(&app->data.root_folder, parent_id);
+    Folder *f = find_folder(&app->id_map, parent_id);
     if (!f) f = &app->data.root_folder;
-    folder_add_subfolder(f, name);
+    folder_add_subfolder(f, name, &app->id_map);
     app_data_changed(app);
 }
 
 static void app_modify_folder(App *app, const char *id, const char *new_name) {
-    Folder *f = find_folder(&app->data.root_folder, id);
+    Folder *f = find_folder(&app->id_map, id);
     if (!f) return;
     free(f->name);
     f->name = str_dup(new_name);
@@ -1707,12 +1825,12 @@ static void app_handle_popup(App *app, int ch, int *changed) {
             popup_navigate_choices(p, ch, &p->selected_folder);
         } else if (ch == '\n' || ch == KEY_ENTER) {
             if (p->is_folder) {
-                move_folder(&app->data.root_folder, p->item_id, p->selected_folder ? p->selected_folder : app->data.root_folder.id);
+                move_folder(&app->data.root_folder, &app->id_map, p->item_id, p->selected_folder ? p->selected_folder : app->data.root_folder.id);
             } else {
                 IdSet to_move = {0};
                 if (app->selected_item_ids.count > 1) {
                     for (size_t i = 0; i < app->selected_item_ids.count; i++) {
-                        if (find_entry(&app->data.root_folder, app->selected_item_ids.ids[i])) {
+                        if (find_entry(&app->id_map, app->selected_item_ids.ids[i])) {
                             idset_add(&to_move, app->selected_item_ids.ids[i]);
                         }
                     }
@@ -1720,7 +1838,7 @@ static void app_handle_popup(App *app, int ch, int *changed) {
                     idset_add(&to_move, p->item_id);
                 }
                 for (size_t i = 0; i < to_move.count; i++) {
-                    move_entry(&app->data.root_folder, to_move.ids[i], p->selected_folder ? p->selected_folder : app->data.root_folder.id);
+                    move_entry(&app->id_map, to_move.ids[i], p->selected_folder ? p->selected_folder : app->data.root_folder.id);
                 }
                 idset_clear(&to_move);
             }
@@ -1838,6 +1956,8 @@ static void app_handle_popup(App *app, int ch, int *changed) {
                         free(app->notes_line_starts);
                         app->notes_line_starts = NULL;
                         app->notes_line_total = 0;
+                        idmap_free(&app->id_map);
+                        idmap_build_folder(&app->id_map, &app->data.root_folder);
                         app_data_changed(app);
                         free(app->message);
                         app->message = str_dup("Imported successfully");
@@ -2403,6 +2523,9 @@ void app_apply_safari_sync(App *app, Folder *bookmark_folders, size_t bm_count, 
     memset(reading_list, 0, sizeof(*reading_list));
     free(app->last_sync_date);
     app->last_sync_date = current_iso_datetime();
+    /* Rebuild hashmap after replacing folder subtrees */
+    idmap_free(&app->id_map);
+    idmap_build_folder(&app->id_map, &app->data.root_folder);
 }
 
 static int app_writeback_safari(App *app) {
