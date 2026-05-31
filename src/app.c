@@ -672,25 +672,88 @@ static void ensure_dir(const char *path) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* String hash set  (open addressing, FNV-1a, power-of-2 cap)                 */
+/* -------------------------------------------------------------------------- */
+
+#define STRSET_TOMBSTONE  ((char *)-1)
+
+typedef struct {
+    char  **keys;
+    size_t  cap;   /* always a power of two */
+    size_t  cnt;
+} StrSet;
+
+static uint32_t strset_hash(const char *s) {
+    uint32_t h = 2166136261u;
+    for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u;
+    return h;
+}
+
+static void strset_grow(StrSet *ss) {
+    size_t old_cap = ss->cap;
+    char **old     = ss->keys;
+    ss->cap  *= 2;
+    ss->keys  = calloc(ss->cap, sizeof(char *));
+    ss->cnt   = 0;
+    size_t mask = ss->cap - 1;
+    for (size_t i = 0; i < old_cap; i++) {
+        if (!old[i] || old[i] == STRSET_TOMBSTONE) continue;
+        uint32_t h = strset_hash(old[i]);
+        for (size_t j = 0; ; j++) {
+            size_t idx = (h + j) & mask;
+            if (!ss->keys[idx]) { ss->keys[idx] = old[i]; ss->cnt++; break; }
+        }
+    }
+    free(old);
+}
+
+/* Returns 1 if key was added, 0 if already present. */
+static int strset_add(StrSet *ss, const char *key) {
+    if (!ss->cap) { ss->cap = 64; ss->keys = calloc(64, sizeof(char *)); }
+    if (ss->cnt * 2 >= ss->cap) strset_grow(ss);
+    size_t mask = ss->cap - 1;
+    uint32_t h  = strset_hash(key);
+    for (size_t i = 0; ; i++) {
+        size_t idx = (h + i) & mask;
+        if (!ss->keys[idx] || ss->keys[idx] == STRSET_TOMBSTONE) {
+            ss->keys[idx] = strdup(key);
+            ss->cnt++;
+            return 1;
+        }
+        if (strcmp(ss->keys[idx], key) == 0) return 0;
+    }
+}
+
+static void strset_free(StrSet *ss) {
+    for (size_t i = 0; i < ss->cap; i++)
+        if (ss->keys[i] && ss->keys[i] != STRSET_TOMBSTONE) free(ss->keys[i]);
+    free(ss->keys);
+    memset(ss, 0, sizeof(*ss));
+}
+
+/* -------------------------------------------------------------------------- */
 /* Deduplication                                                              */
 /* -------------------------------------------------------------------------- */
 
 /* Remove duplicate entries within a single folder by comparing text
-   case-insensitively. Keeps the first occurrence. */
+   case-insensitively. Keeps the first occurrence.  O(n) via hash set. */
 static void folder_deduplicate_entries(Folder *f) {
-    for (size_t i = 0; i < f->entry_count; i++) {
-        if (!f->entries[i].text) continue;
-        for (size_t j = i + 1; j < f->entry_count; j++) {
-            if (f->entries[j].text &&
-                strcasecmp(f->entries[i].text, f->entries[j].text) == 0) {
-                entry_free(&f->entries[j]);
-                memmove(&f->entries[j], &f->entries[j + 1],
-                        (f->entry_count - j - 1) * sizeof(Entry));
-                f->entry_count--;
-                j--;
-            }
+    StrSet seen = {0};
+    for (size_t i = 0; i < f->entry_count; ) {
+        Entry *e = &f->entries[i];
+        if (!e->text) { i++; continue; }
+        char *lo = strdup(e->text);
+        for (char *c = lo; *c; c++) *c = (char)tolower((unsigned char)*c);
+        if (!strset_add(&seen, lo)) {
+            entry_free(e);
+            memmove(e, e + 1, (f->entry_count - i - 1) * sizeof(Entry));
+            f->entry_count--;
+        } else {
+            i++;
         }
+        free(lo);
     }
+    strset_free(&seen);
 }
 
 /* Recursively deduplicate all entries in a folder tree. */
@@ -705,19 +768,24 @@ static void folder_deduplicate(Folder *f) {
 /* Merge helpers for reload                                                   */
 /* -------------------------------------------------------------------------- */
 
-/* Add entries from `src` to `dst` that don't already exist (by text). */
+/* Add entries from `src` to `dst` that don't already exist (by text).
+   O(n+m) via hash set. */
 static void merge_entries(Folder *dst, const Folder *src) {
+    StrSet seen = {0};
+    /* seed with all existing dst entries (lowercased) */
+    for (size_t i = 0; i < dst->entry_count; i++) {
+        if (!dst->entries[i].text) continue;
+        char *lo = strdup(dst->entries[i].text);
+        for (char *c = lo; *c; c++) *c = (char)tolower((unsigned char)*c);
+        strset_add(&seen, lo);
+        free(lo);
+    }
+    /* add src entries not already seen */
     for (size_t i = 0; i < src->entry_count; i++) {
         if (!src->entries[i].text) continue;
-        int found = 0;
-        for (size_t j = 0; j < dst->entry_count; j++) {
-            if (dst->entries[j].text &&
-                strcasecmp(dst->entries[j].text, src->entries[i].text) == 0) {
-                found = 1;
-                break;
-            }
-        }
-        if (!found) {
+        char *lo = strdup(src->entries[i].text);
+        for (char *c = lo; *c; c++) *c = (char)tolower((unsigned char)*c);
+        if (strset_add(&seen, lo)) {
             if (dst->entry_count >= dst->entry_cap) {
                 dst->entry_cap = dst->entry_cap ? dst->entry_cap * 2 : 4;
                 dst->entries = realloc(dst->entries,
@@ -729,7 +797,9 @@ static void merge_entries(Folder *dst, const Folder *src) {
             e->text = str_dup(src->entries[i].text);
             e->date = str_dup(src->entries[i].date);
         }
+        free(lo);
     }
+    strset_free(&seen);
 }
 
 /* Recursively merge `remote` folders into `local`. Folders that exist in
