@@ -452,19 +452,32 @@ static int folder_has_search_match(const Folder *f, const char *search) {
     return 0;
 }
 
-static void rebuild_flat(Folder *f, size_t depth, FlatItem **out, size_t *count, size_t *cap, const IdSet *expanded, const char *search) {
+/* Count how many flat items will be produced (without allocating).
+ * Mirrors the traversal logic in rebuild_flat(). */
+static size_t count_flat_items(const Folder *f, const IdSet *expanded, const char *search) {
+    int is_searching = search && search[0] != '\0';
+    size_t total = 0;
+    for (size_t i = 0; i < f->subfolder_count; i++) {
+        const Folder *sub = &f->subfolders[i];
+        if (is_searching && !folder_has_search_match(sub, search)) continue;
+        total++;
+        if (is_searching || !sub->is_collapsed) {
+            total += count_flat_items(sub, expanded, search);
+        }
+    }
+    for (size_t i = 0; i < f->entry_count; i++) {
+        const Entry *e = &f->entries[i];
+        if (is_searching && !(e->text && entry_matches_search(e->text, search))) continue;
+        total++;
+    }
+    return total;
+}
+
+static void rebuild_flat(Folder *f, size_t depth, FlatItem **out, size_t *count, const IdSet *expanded, const char *search) {
     int is_searching = search && search[0] != '\0';
     for (size_t i = 0; i < f->subfolder_count; i++) {
         Folder *sub = &f->subfolders[i];
         if (is_searching && !folder_has_search_match(sub, search)) continue;
-        if (*count >= *cap) {
-            size_t old_cap = *cap;
-            *cap = *cap ? *cap * 2 : 16;
-            FlatItem *new_out = realloc(*out, *cap * sizeof(FlatItem));
-            if (!new_out) return;
-            memset(new_out + old_cap, 0, (*cap - old_cap) * sizeof(FlatItem));
-            *out = new_out;
-        }
         FlatItem *item = &(*out)[(*count)++];
         memcpy(item->id, sub->id, UUID_STR_LEN + 1);
         item->kind = ITEM_FOLDER;
@@ -474,7 +487,7 @@ static void rebuild_flat(Folder *f, size_t depth, FlatItem **out, size_t *count,
         item->is_collapsed = is_searching ? 0 : sub->is_collapsed;
 
         if (is_searching || !sub->is_collapsed) {
-            rebuild_flat(sub, depth + 1, out, count, cap, expanded, search);
+            rebuild_flat(sub, depth + 1, out, count, expanded, search);
         }
     }
     for (size_t i = 0; i < f->entry_count; i++) {
@@ -484,14 +497,6 @@ static void rebuild_flat(Folder *f, size_t depth, FlatItem **out, size_t *count,
             match = e->text && entry_matches_search(e->text, search);
         }
         if (!match) continue;
-        if (*count >= *cap) {
-            size_t old_cap = *cap;
-            *cap = *cap ? *cap * 2 : 16;
-            FlatItem *new_out = realloc(*out, *cap * sizeof(FlatItem));
-            if (!new_out) return;
-            memset(new_out + old_cap, 0, (*cap - old_cap) * sizeof(FlatItem));
-            *out = new_out;
-        }
         FlatItem *item = &(*out)[(*count)++];
         memcpy(item->id, e->id, UUID_STR_LEN + 1);
         item->kind = ITEM_ENTRY;
@@ -508,8 +513,21 @@ void app_rebuild_flat_items(App *app) {
         app->flat_items[i].name = NULL;
     }
     app->flat_count = 0;
+
+    /* First pass: count matching items so we can allocate exactly once. */
+    size_t total = count_flat_items(&app->data.root_folder,
+                                    &app->search_expanded_folders,
+                                    app->search_input);
+    if (total > app->flat_cap) {
+        FlatItem *new_items = realloc(app->flat_items, total * sizeof(FlatItem));
+        if (!new_items) return;
+        app->flat_items = new_items;
+        app->flat_cap = total;
+    }
+
+    /* Second pass: fill the pre-allocated array. */
     rebuild_flat(&app->data.root_folder, 0,
-                 &app->flat_items, &app->flat_count, &app->flat_cap,
+                 &app->flat_items, &app->flat_count,
                  &app->search_expanded_folders, app->search_input);
     app->flat_dirty = 0;
 }
