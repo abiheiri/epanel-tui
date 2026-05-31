@@ -1,3 +1,3 @@
 # ePanel TUI
 
-Under construction
+A personal tool I use for bookmarking things. TUI edition!

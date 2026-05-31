@@ -811,6 +811,27 @@ void app_free(App *app) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Path unescaping — strip shell-style backslash escapes from a path         */
+/* -------------------------------------------------------------------------- */
+
+static char *unescape_path(const char *s) {
+    if (!s) return NULL;
+    size_t n = strlen(s);
+    char *out = malloc(n + 1);
+    if (!out) return NULL;
+    size_t j = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] == '\\' && i + 1 < n) {
+            /* skip the backslash, keep the next character literally */
+            i++;
+        }
+        out[j++] = s[i];
+    }
+    out[j] = '\0';
+    return out;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Load / save                                                                */
 /* -------------------------------------------------------------------------- */
 
@@ -830,17 +851,17 @@ int app_load(App *app) {
             while (vlen > 0 && (val[vlen - 1] == '\n' || val[vlen - 1] == '\r')) val[--vlen] = '\0';
             if (strcmp(key, "links_path") == 0) {
                 free(app->settings_links_path);
-                app->settings_links_path = str_dup(val);
+                app->settings_links_path = unescape_path(val);
             } else if (strcmp(key, "notes_path") == 0) {
                 free(app->settings_notes_path);
-                app->settings_notes_path = str_dup(val);
+                app->settings_notes_path = unescape_path(val);
             }
 #ifdef __APPLE__
             else if (strcmp(key, "safari_sync") == 0) {
                 app->safari_sync_enabled = strcmp(val, "true") == 0;
             } else if (strcmp(key, "safari_sync_path") == 0) {
                 free(app->safari_sync_path);
-                app->safari_sync_path = str_dup(val);
+                app->safari_sync_path = unescape_path(val);
             }
 #endif
         }
