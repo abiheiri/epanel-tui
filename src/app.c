@@ -637,7 +637,7 @@ void app_rebuild_flat_items(App *app) {
     /* Incremental search: if the new search string extends the previous one,
      * we can prune the tree walk to only items that matched the shorter prefix.
      * Clearing or shortening the search falls back to a full scan. */
-    IdSet *prev_matches = NULL;
+    const IdSet *prev_matches = NULL;
     if (app->prev_search_input && app->prev_search_input[0] &&
         app->search_input && app->search_input[0]) {
         size_t prev_len = strlen(app->prev_search_input);
@@ -850,6 +850,7 @@ typedef struct {
 
 static uint32_t strset_hash(const char *s) {
     uint32_t h = 2166136261u;
+    if (!s) return h;
     for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u;
     return h;
 }
@@ -908,6 +909,7 @@ static void folder_deduplicate_entries(Folder *f) {
         Entry *e = &f->entries[i];
         if (!e->text) { i++; continue; }
         char *lo = strdup(e->text);
+        if (!lo) { i++; continue; }
         for (char *c = lo; *c; c++) *c = (char)tolower((unsigned char)*c);
         if (!strset_add(&seen, lo)) {
             entry_free(e);
@@ -941,6 +943,7 @@ static void merge_entries(Folder *dst, const Folder *src) {
     for (size_t i = 0; i < dst->entry_count; i++) {
         if (!dst->entries[i].text) continue;
         char *lo = strdup(dst->entries[i].text);
+        if (!lo) continue;
         for (char *c = lo; *c; c++) *c = (char)tolower((unsigned char)*c);
         strset_add(&seen, lo);
         free(lo);
@@ -949,6 +952,7 @@ static void merge_entries(Folder *dst, const Folder *src) {
     for (size_t i = 0; i < src->entry_count; i++) {
         if (!src->entries[i].text) continue;
         char *lo = strdup(src->entries[i].text);
+        if (!lo) continue;
         for (char *c = lo; *c; c++) *c = (char)tolower((unsigned char)*c);
         if (strset_add(&seen, lo)) {
             if (dst->entry_count >= dst->entry_cap) {
@@ -2219,12 +2223,10 @@ static void app_handle_notes(App *app, int ch, int *changed) {
         app->notes_cursor_x = 0;
         text_changed = 1;
         notes_rebuild_lines(app);
-        line_starts = app->notes_line_starts;
-        total_lines = app->notes_line_total;
     } else if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b') {
         if (cursor_offset > 0) {
             int was_line_boundary = 0;
-            if (app->notes_text && cursor_offset > 0 &&
+            if (app->notes_text &&
                 app->notes_text[cursor_offset - 1] == '\n')
                 was_line_boundary = 1;
             str_delete_before(&app->notes_text, cursor_offset);
@@ -2243,8 +2245,6 @@ static void app_handle_notes(App *app, int ch, int *changed) {
             text_changed = 1;
             if (was_line_boundary) {
                 notes_rebuild_lines(app);
-                line_starts = app->notes_line_starts;
-                total_lines = app->notes_line_total;
             }
         }
     } else if (ch == 11) { /* Ctrl+K */
@@ -2254,7 +2254,6 @@ static void app_handle_notes(App *app, int ch, int *changed) {
         app->notes_line_starts = NULL;
         app->notes_line_total = 0;
         line_starts = NULL;
-        total_lines = 0;
         app->notes_cursor_x = 0;
         app->notes_cursor_y = 0;
         text_changed = 1;
