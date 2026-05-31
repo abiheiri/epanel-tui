@@ -98,8 +98,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Warning: failed to load data\n");
     }
 
-    /* Start file watcher */
+    /* Start file watcher — watches both epanel.json and notes.txt */
     char *data_path = NULL;
+    char *notes_path = NULL;
     {
         char *expanded = expand_tilde(app.settings_links_path);
         size_t n = strlen(expanded);
@@ -110,9 +111,19 @@ int main(int argc, char **argv) {
         }
         free(expanded);
     }
+    {
+        char *expanded = expand_tilde(app.settings_notes_path);
+        size_t n = strlen(expanded);
+        notes_path = malloc(n + 11);
+        if (notes_path) {
+            memcpy(notes_path, expanded, n);
+            memcpy(notes_path + n, "/notes.txt", 11);
+        }
+        free(expanded);
+    }
     int watch_fd = -1;
     if (data_path) {
-        watch_fd = file_watch_start(data_path);
+        watch_fd = file_watch_start(data_path, notes_path);
         if (watch_fd >= 0) {
             app.watch_pipe_write = watch_fd; /* actually read end, but we store for reference */
         }
@@ -249,5 +260,6 @@ int main(int argc, char **argv) {
     if (sync_pipe_fds[1] >= 0) close(sync_pipe_fds[1]);
 #endif
     free(data_path);
+    free(notes_path);
     return 0;
 }

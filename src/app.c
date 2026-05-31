@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -638,6 +639,113 @@ static void ensure_dir(const char *path) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Deduplication                                                              */
+/* -------------------------------------------------------------------------- */
+
+/* Remove duplicate entries within a single folder by comparing text
+   case-insensitively. Keeps the first occurrence. */
+static void folder_deduplicate_entries(Folder *f) {
+    for (size_t i = 0; i < f->entry_count; i++) {
+        if (!f->entries[i].text) continue;
+        for (size_t j = i + 1; j < f->entry_count; j++) {
+            if (f->entries[j].text &&
+                strcasecmp(f->entries[i].text, f->entries[j].text) == 0) {
+                entry_free(&f->entries[j]);
+                memmove(&f->entries[j], &f->entries[j + 1],
+                        (f->entry_count - j - 1) * sizeof(Entry));
+                f->entry_count--;
+                j--;
+            }
+        }
+    }
+}
+
+/* Recursively deduplicate all entries in a folder tree. */
+static void folder_deduplicate(Folder *f) {
+    folder_deduplicate_entries(f);
+    for (size_t i = 0; i < f->subfolder_count; i++) {
+        folder_deduplicate(&f->subfolders[i]);
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Merge helpers for reload                                                   */
+/* -------------------------------------------------------------------------- */
+
+/* Add entries from `src` to `dst` that don't already exist (by text). */
+static void merge_entries(Folder *dst, const Folder *src) {
+    for (size_t i = 0; i < src->entry_count; i++) {
+        if (!src->entries[i].text) continue;
+        int found = 0;
+        for (size_t j = 0; j < dst->entry_count; j++) {
+            if (dst->entries[j].text &&
+                strcasecmp(dst->entries[j].text, src->entries[i].text) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            if (dst->entry_count >= dst->entry_cap) {
+                dst->entry_cap = dst->entry_cap ? dst->entry_cap * 2 : 4;
+                dst->entries = realloc(dst->entries,
+                                       dst->entry_cap * sizeof(Entry));
+            }
+            Entry *e = &dst->entries[dst->entry_count++];
+            memset(e, 0, sizeof(*e));
+            memcpy(e->id, src->entries[i].id, UUID_STR_LEN + 1);
+            e->text = str_dup(src->entries[i].text);
+            e->date = str_dup(src->entries[i].date);
+        }
+    }
+}
+
+/* Recursively merge `remote` folders into `local`. Folders that exist in
+   both are merged by name; new folders from remote are appended. */
+static void folder_merge(Folder *local, const Folder *remote) {
+    merge_entries(local, remote);
+    for (size_t i = 0; i < remote->subfolder_count; i++) {
+        const Folder *rs = &remote->subfolders[i];
+        if (!rs->name) continue;
+        int found = 0;
+        for (size_t j = 0; j < local->subfolder_count; j++) {
+            if (local->subfolders[j].name &&
+                strcmp(local->subfolders[j].name, rs->name) == 0) {
+                folder_merge(&local->subfolders[j], rs);
+                found = 1;
+                break;
+            }
+        }
+        if (!found && (rs->entry_count > 0 || rs->subfolder_count > 0)) {
+            if (local->subfolder_count >= local->subfolder_cap) {
+                local->subfolder_cap = local->subfolder_cap ? local->subfolder_cap * 2 : 4;
+                local->subfolders = realloc(local->subfolders,
+                                            local->subfolder_cap * sizeof(Folder));
+            }
+            /* Deep copy the remote folder */
+            Folder *df = &local->subfolders[local->subfolder_count++];
+            memset(df, 0, sizeof(*df));
+            memcpy(df->id, rs->id, UUID_STR_LEN + 1);
+            df->name = str_dup(rs->name);
+            df->is_collapsed = rs->is_collapsed;
+            merge_entries(df, rs);
+            for (size_t k = 0; k < rs->subfolder_count; k++) {
+                if (df->subfolder_count >= df->subfolder_cap) {
+                    df->subfolder_cap = df->subfolder_cap ? df->subfolder_cap * 2 : 4;
+                    df->subfolders = realloc(df->subfolders,
+                                             df->subfolder_cap * sizeof(Folder));
+                }
+                Folder *ds = &df->subfolders[df->subfolder_count++];
+                memset(ds, 0, sizeof(*ds));
+                memcpy(ds->id, rs->subfolders[k].id, UUID_STR_LEN + 1);
+                ds->name = str_dup(rs->subfolders[k].name);
+                ds->is_collapsed = rs->subfolders[k].is_collapsed;
+                merge_entries(ds, &rs->subfolders[k]);
+            }
+        }
+    }
+}
+
+/* -------------------------------------------------------------------------- */
 /* App init / free                                                            */
 /* -------------------------------------------------------------------------- */
 
@@ -765,6 +873,10 @@ int app_load(App *app) {
             buf[len] = '\0';
             EPanelData new_data = {0};
             if (epanel_from_json(buf, &new_data)) {
+                /* Deduplicate on first load to avoid importing entries that
+                   already exist (from the Swift partner or manual edits). */
+                folder_deduplicate(&new_data.root_folder);
+
                 folder_free(&app->data.root_folder);
                 free(app->data.notes);
                 app->data = new_data;
@@ -785,6 +897,29 @@ int app_load(App *app) {
         fclose(fp);
     }
     free(data_path);
+
+    /* Also load notes from companion notes.txt — the Swift GUI partner
+       stores notes here rather than in the JSON. If notes.txt has content,
+       it takes precedence over any notes loaded from the JSON. */
+    char *notes_path = notes_file_path(app);
+    fp = fopen(notes_path, "r");
+    if (fp) {
+        fseek(fp, 0, SEEK_END);
+        long len = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        if (len > 0) {
+            char *notes_buf = malloc((size_t)len + 1);
+            if (notes_buf && fread(notes_buf, 1, (size_t)len, fp) == (size_t)len) {
+                notes_buf[len] = '\0';
+                free(app->notes_text);
+                app->notes_text = notes_buf;
+            } else {
+                free(notes_buf);
+            }
+        }
+        fclose(fp);
+    }
+    free(notes_path);
 
     return 0;
 }
@@ -890,8 +1025,8 @@ int app_reload(App *app) {
     buf[len] = '\0';
     fclose(fp);
 
-    EPanelData new_data = {0};
-    if (!epanel_from_json(buf, &new_data)) {
+    EPanelData remote = {0};
+    if (!epanel_from_json(buf, &remote)) {
         free(buf);
         popup_set_alert(&app->popup, "Reload failed: invalid JSON");
         free(data_path);
@@ -899,6 +1034,8 @@ int app_reload(App *app) {
     }
     free(buf);
 
+    /* Capture whether the user had unsaved changes before we clear the timer */
+    int had_unsaved_changes = (app->save_after.tv_sec != 0 || app->save_after.tv_nsec != 0);
     app->save_after.tv_sec = 0;
     app->save_after.tv_nsec = 0;
 
@@ -912,17 +1049,63 @@ int app_reload(App *app) {
         idset_add(&old_selected, app->selected_item_ids.ids[i]);
     }
 
-    folder_free(&app->data.root_folder);
-    free(app->data.notes);
-    app->data = new_data;
+    /* Merge remote data into local data.  When there are no pending unsaved
+       changes we do a full replacement so that deletions from the GUI partner
+       are reflected.  When the user has unsaved in-memory changes we fall
+       back to the additive merge to preserve their work. */
+    folder_deduplicate(&remote.root_folder);
+    if (had_unsaved_changes) {
+        folder_merge(&app->data.root_folder, &remote.root_folder);
+    } else {
+        folder_free(&app->data.root_folder);
+        free(app->data.notes);
+        app->data = remote;
+        memset(&remote, 0, sizeof(remote));
+    }
+    /* Merge notes: if remote still has notes and ours are empty, take theirs */
+    if (remote.notes && (!app->data.notes || app->data.notes[0] == '\0')) {
+        free(app->data.notes);
+        app->data.notes = str_dup(remote.notes);
+        free(app->notes_text);
+        app->notes_text = str_dup(remote.notes);
+    }
+    /* Clean up remote after merge (no-op after full replacement) */
+    folder_free(&remote.root_folder);
+    free(remote.notes);
+
     if (strcmp(app->data.root_folder.id, "") == 0) {
         uuid_gen(app->data.root_folder.id);
     }
     free(app->data.root_folder.name);
     app->data.root_folder.name = str_dup("/");
     app->data.root_folder.is_collapsed = 0;
-    free(app->notes_text);
-    app->notes_text = str_dup(app->data.notes ? app->data.notes : "");
+
+    /* Reload notes from notes.txt — but only if there is no unsaved text in
+       the editor. Otherwise a file watch event arriving while the user is
+       mid-edit would wipe their work. */
+    if (!had_unsaved_changes) {
+        free(app->notes_text);
+        app->notes_text = str_dup(app->data.notes ? app->data.notes : "");
+        char *np = notes_file_path(app);
+        FILE *nfp = fopen(np, "r");
+        if (nfp) {
+            fseek(nfp, 0, SEEK_END);
+            long nlen = ftell(nfp);
+            fseek(nfp, 0, SEEK_SET);
+            if (nlen > 0) {
+                char *nbuf = malloc((size_t)nlen + 1);
+                if (nbuf && fread(nbuf, 1, (size_t)nlen, nfp) == (size_t)nlen) {
+                    nbuf[nlen] = '\0';
+                    free(app->notes_text);
+                    app->notes_text = nbuf;
+                } else {
+                    free(nbuf);
+                }
+            }
+            fclose(nfp);
+        }
+        free(np);
+    }
 
     app_rebuild_flat_items(app);
 
@@ -1491,6 +1674,8 @@ static void app_handle_popup(App *app, int ch, int *changed) {
                     buf[len] = '\0';
                     EPanelData new_data = {0};
                     if (epanel_from_json(buf, &new_data)) {
+                        /* Deduplicate imported data to prevent duplicates */
+                        folder_deduplicate(&new_data.root_folder);
                         folder_free(&app->data.root_folder);
                         free(app->data.notes);
                         app->data = new_data;
@@ -1652,42 +1837,146 @@ static void app_handle_links(App *app, int ch, int *changed) {
 }
 
 static void app_handle_notes(App *app, int ch, int *changed) {
-    size_t old_len = app->notes_text ? strlen(app->notes_text) : 0;
-    if (ch >= 32 && ch < 127) {
-        str_append_char(&app->notes_text, (char)ch);
-    } else if (ch == '\n' || ch == KEY_ENTER) {
-        str_append_char(&app->notes_text, '\n');
-    } else if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b') {
-        str_pop_char(&app->notes_text);
-    } else if (ch == 11) { /* Ctrl+K */
-        if (app->notes_text) {
-            free(app->notes_text);
-            app->notes_text = NULL;
+    /* Helper: locate line boundaries */
+    size_t total_lines = 1;
+    size_t *line_starts = NULL;
+
+    /* Compute absolute cursor offset from (notes_cursor_x, notes_cursor_y) */
+    size_t cursor_offset = 0;
+    if (app->notes_text) {
+        size_t len = strlen(app->notes_text);
+        for (size_t i = 0; i < len; i++) {
+            if (app->notes_text[i] == '\n') total_lines++;
         }
-    }
-    size_t new_len = app->notes_text ? strlen(app->notes_text) : 0;
-    if (new_len != old_len) {
-        app_data_changed(app);
-        *changed = 1;
-    }
-    /* Update cursor */
-    size_t lines = 1;
-    size_t last_line_len = 0;
-    for (size_t i = 0; app->notes_text && app->notes_text[i]; i++) {
-        if (app->notes_text[i] == '\n') {
-            lines++;
-            last_line_len = 0;
+        line_starts = malloc((total_lines + 1) * sizeof(size_t));
+        if (line_starts) {
+            size_t li = 0;
+            line_starts[li++] = 0;
+            for (size_t i = 0; i < len && li < total_lines; i++) {
+                if (app->notes_text[i] == '\n') {
+                    line_starts[li++] = i + 1;
+                }
+            }
+            line_starts[li] = len;
+        }
+        /* Clamp cursor in case notes_text was shortened externally */
+        if (total_lines == 0) total_lines = 1;
+        if (app->notes_cursor_y >= total_lines)
+            app->notes_cursor_y = total_lines - 1;
+        /* Compute offset from cursor position */
+        if (line_starts) {
+            cursor_offset = line_starts[app->notes_cursor_y] + app->notes_cursor_x;
+            size_t line_end = line_starts[app->notes_cursor_y + 1];
+            if (cursor_offset > line_end) cursor_offset = line_end;
         } else {
-            last_line_len++;
+            cursor_offset = len;
         }
     }
-    if (new_len > 0 && app->notes_text[new_len - 1] == '\n') {
-        app->notes_cursor_y = lines;
+
+    int text_changed = 0;
+
+    if (ch >= 32 && ch < 127) {
+        str_insert_char(&app->notes_text, cursor_offset, (char)ch);
+        app->notes_cursor_x++;
+        text_changed = 1;
+    } else if (ch == '\n' || ch == KEY_ENTER) {
+        str_insert_char(&app->notes_text, cursor_offset, '\n');
+        app->notes_cursor_y++;
         app->notes_cursor_x = 0;
-    } else {
-        app->notes_cursor_y = lines > 0 ? lines - 1 : 0;
-        app->notes_cursor_x = last_line_len;
+        text_changed = 1;
+    } else if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b') {
+        if (cursor_offset > 0) {
+            str_delete_before(&app->notes_text, cursor_offset);
+            if (app->notes_cursor_x > 0) {
+                app->notes_cursor_x--;
+            } else if (app->notes_cursor_y > 0) {
+                /* Backspace at line start joined this line with the previous.
+                   Cursor goes to end of the joined previous line. */
+                app->notes_cursor_y--;
+                if (line_starts) {
+                    size_t prev_len = line_starts[app->notes_cursor_y + 1]
+                                    - line_starts[app->notes_cursor_y] - 1;
+                    app->notes_cursor_x = prev_len;
+                } else {
+                    app->notes_cursor_x = 0;
+                }
+            }
+            text_changed = 1;
+        }
+    } else if (ch == 11) { /* Ctrl+K */
+        free(app->notes_text);
+        app->notes_text = NULL;
+        app->notes_cursor_x = 0;
+        app->notes_cursor_y = 0;
+        text_changed = 1;
+    } else if (ch == KEY_LEFT) {
+        if (app->notes_cursor_x > 0) {
+            app->notes_cursor_x--;
+        } else if (app->notes_cursor_y > 0) {
+            app->notes_cursor_y--;
+            if (line_starts) {
+                size_t prev_end = line_starts[app->notes_cursor_y + 1];
+                size_t line_len = prev_end - line_starts[app->notes_cursor_y];
+                if (line_len > 0) line_len--; /* exclude trailing \n if any */
+                /* Don't go past the actual end */
+                size_t prev_text_start = line_starts[app->notes_cursor_y];
+                size_t actual_len = 0;
+                for (size_t i = prev_text_start; i < prev_end; i++) {
+                    if (app->notes_text && app->notes_text[i] == '\n') break;
+                    actual_len++;
+                }
+                app->notes_cursor_x = actual_len;
+            }
+        }
+    } else if (ch == KEY_RIGHT) {
+        if (!app->notes_text || strlen(app->notes_text) == 0) { }
+        else if (line_starts) {
+            size_t cur_start = line_starts[app->notes_cursor_y];
+            size_t cur_end = line_starts[app->notes_cursor_y + 1];
+            size_t line_content = cur_end - cur_start;
+            if (line_content > 0 && app->notes_text && app->notes_text[cur_end - 1] == '\n')
+                line_content--;
+            if (app->notes_cursor_x < line_content) {
+                app->notes_cursor_x++;
+            } else if (app->notes_cursor_y + 1 < total_lines) {
+                app->notes_cursor_y++;
+                app->notes_cursor_x = 0;
+            }
+        }
+    } else if (ch == KEY_UP) {
+        if (app->notes_cursor_y > 0) {
+            app->notes_cursor_y--;
+            if (line_starts) {
+                size_t cur_start = line_starts[app->notes_cursor_y];
+                size_t cur_end = line_starts[app->notes_cursor_y + 1];
+                size_t line_len = cur_end - cur_start;
+                if (line_len > 0 && app->notes_text && app->notes_text[cur_end - 1] == '\n')
+                    line_len--;
+                if (app->notes_cursor_x > line_len)
+                    app->notes_cursor_x = line_len;
+            }
+        }
+    } else if (ch == KEY_DOWN) {
+        if (app->notes_cursor_y + 1 < total_lines) {
+            app->notes_cursor_y++;
+            if (line_starts) {
+                size_t cur_start = line_starts[app->notes_cursor_y];
+                size_t cur_end = line_starts[app->notes_cursor_y + 1];
+                size_t line_len = cur_end - cur_start;
+                if (line_len > 0 && app->notes_text && app->notes_text[cur_end - 1] == '\n')
+                    line_len--;
+                if (app->notes_cursor_x > line_len)
+                    app->notes_cursor_x = line_len;
+            }
+        }
     }
+
+    free(line_starts);
+
+    if (text_changed) {
+        app_data_changed(app);
+    }
+    *changed = 1;
 }
 
 static void app_handle_settings(App *app, int ch, int *changed) {

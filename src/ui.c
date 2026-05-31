@@ -158,19 +158,34 @@ static void draw_links(const App *app, int y, int x, int h, int w) {
 static void draw_notes(const App *app, int y, int x, int h, int w) {
     attrset(COLOR_PAIR(COLOR_PAIR_DEFAULT));
     draw_box_title(y, x, h, w, " Notes ");
+    int content_w = w - 4;
+    if (content_w < 0) content_w = 0;
     if (app->notes_text) {
         int row = 0;
         const char *p = app->notes_text;
         while (*p && row < h - 2) {
             char line[1024];
             int i = 0;
-            while (*p && *p != '\n' && i < w - 4 && i < 1023) {
+            while (*p && *p != '\n' && i < content_w && i < 1023) {
                 line[i++] = *p++;
             }
+            /* Pad remaining content width with spaces so shorter text
+               overwrites any leftover characters from a longer previous text. */
+            while (i < content_w && i < 1023) line[i++] = ' ';
             line[i] = '\0';
             if (*p == '\n') p++;
             mvaddstr(y + 1 + row, x + 2, line);
             row++;
+        }
+        /* Clear any remaining rows below the text */
+        for (int r = row; r < h - 2; r++) {
+            move(y + 1 + r, x + 2);
+            for (int ci = 0; ci < content_w; ci++) addch(' ');
+        }
+    } else {
+        for (int r = 0; r < h - 2; r++) {
+            move(y + 1 + r, x + 2);
+            for (int ci = 0; ci < content_w; ci++) addch(' ');
         }
     }
 }
