@@ -321,14 +321,16 @@ static void move_entry(Folder *root, const char *item_id, const char *target_id)
 }
 
 /* -------------------------------------------------------------------------- */
-/* IdSet                                                                      */
+/* IdSet — sorted array with binary-search lookups                            */
 /* -------------------------------------------------------------------------- */
 
+static int id_cmp(const void *a, const void *b) {
+    return strcmp(*(const char **)a, *(const char **)b);
+}
+
 int idset_contains(const IdSet *set, const char *id) {
-    for (size_t i = 0; i < set->count; i++) {
-        if (str_eq(set->ids[i], id)) return 1;
-    }
-    return 0;
+    if (!set || !id) return 0;
+    return bsearch(&id, set->ids, set->count, sizeof(char *), id_cmp) != NULL;
 }
 
 static void idset_add(IdSet *set, const char *id) {
@@ -337,19 +339,29 @@ static void idset_add(IdSet *set, const char *id) {
         set->cap = set->cap ? set->cap * 2 : 4;
         set->ids = realloc(set->ids, set->cap * sizeof(char *));
     }
-    set->ids[set->count++] = str_dup(id);
+    /* binary search for insertion point to keep sorted order */
+    size_t lo = 0, hi = set->count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (strcmp(set->ids[mid], id) < 0)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    memmove(&set->ids[lo + 1], &set->ids[lo],
+            (set->count - lo) * sizeof(char *));
+    set->ids[lo] = str_dup(id);
+    set->count++;
 }
 
 static void idset_remove(IdSet *set, const char *id) {
-    for (size_t i = 0; i < set->count; i++) {
-        if (str_eq(set->ids[i], id)) {
-            free(set->ids[i]);
-            memmove(&set->ids[i], &set->ids[i + 1],
-                    (set->count - i - 1) * sizeof(char *));
-            set->count--;
-            return;
-        }
-    }
+    char **found = bsearch(&id, set->ids, set->count, sizeof(char *), id_cmp);
+    if (!found) return;
+    size_t i = (size_t)(found - set->ids);
+    free(set->ids[i]);
+    memmove(&set->ids[i], &set->ids[i + 1],
+            (set->count - i - 1) * sizeof(char *));
+    set->count--;
 }
 
 static void idset_clear(IdSet *set) {
