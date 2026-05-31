@@ -2,7 +2,7 @@
 # Supports: Linux (x86_64, aarch64), macOS (x86_64, arm64)
 
 NAME    := epanel
-VERSION ?= v1.2.0
+VERSION ?= v1.2.2
 SRCDIR  := src
 BUILDIR := build
 
