@@ -182,6 +182,10 @@ typedef struct {
 
     /* ID → pointer hashmap for O(1) tree lookups */
     IdMap id_map;
+
+    /* Incremental search caching: avoid full-tree scan on each keystroke */
+    char *prev_search_input;
+    IdSet prev_search_matches;  /* IDs of folders/entries in previous flat list */
 } App;
 
 void app_init(App *app);

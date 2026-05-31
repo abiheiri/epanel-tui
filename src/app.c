@@ -548,45 +548,55 @@ static int entry_matches_search(const char *text, const char *search) {
     return 0;
 }
 
-static int folder_has_search_match(const Folder *f, const char *search) {
+static int folder_has_search_match(const Folder *f, const char *search,
+                                    const IdSet *prev_matches) {
     if (!search || search[0] == '\0') return 1;
+    /* Incremental: this folder didn't match the shorter prefix — skip */
+    if (prev_matches && !idset_contains(prev_matches, f->id)) return 0;
     if (f->name && entry_matches_search(f->name, search)) return 1;
     for (size_t i = 0; i < f->entry_count; i++) {
+        if (prev_matches && !idset_contains(prev_matches, f->entries[i].id)) continue;
         if (f->entries[i].text && entry_matches_search(f->entries[i].text, search))
             return 1;
     }
     for (size_t i = 0; i < f->subfolder_count; i++) {
-        if (folder_has_search_match(&f->subfolders[i], search)) return 1;
+        if (folder_has_search_match(&f->subfolders[i], search, prev_matches)) return 1;
     }
     return 0;
 }
 
 /* Count how many flat items will be produced (without allocating).
  * Mirrors the traversal logic in rebuild_flat(). */
-static size_t count_flat_items(const Folder *f, const IdSet *expanded, const char *search) {
+static size_t count_flat_items(const Folder *f, const IdSet *expanded,
+                               const char *search, const IdSet *prev_matches) {
     int is_searching = search && search[0] != '\0';
     size_t total = 0;
     for (size_t i = 0; i < f->subfolder_count; i++) {
         const Folder *sub = &f->subfolders[i];
-        if (is_searching && !folder_has_search_match(sub, search)) continue;
+        if (prev_matches && !idset_contains(prev_matches, sub->id)) continue;
+        if (is_searching && !folder_has_search_match(sub, search, prev_matches)) continue;
         total++;
         if (is_searching || !sub->is_collapsed) {
-            total += count_flat_items(sub, expanded, search);
+            total += count_flat_items(sub, expanded, search, prev_matches);
         }
     }
     for (size_t i = 0; i < f->entry_count; i++) {
         const Entry *e = &f->entries[i];
+        if (prev_matches && !idset_contains(prev_matches, e->id)) continue;
         if (is_searching && !(e->text && entry_matches_search(e->text, search))) continue;
         total++;
     }
     return total;
 }
 
-static void rebuild_flat(Folder *f, size_t depth, FlatItem **out, size_t *count, const IdSet *expanded, const char *search) {
+static void rebuild_flat(Folder *f, size_t depth, FlatItem **out, size_t *count,
+                         const IdSet *expanded, const char *search,
+                         const IdSet *prev_matches) {
     int is_searching = search && search[0] != '\0';
     for (size_t i = 0; i < f->subfolder_count; i++) {
         Folder *sub = &f->subfolders[i];
-        if (is_searching && !folder_has_search_match(sub, search)) continue;
+        if (prev_matches && !idset_contains(prev_matches, sub->id)) continue;
+        if (is_searching && !folder_has_search_match(sub, search, prev_matches)) continue;
         FlatItem *item = &(*out)[(*count)++];
         memcpy(item->id, sub->id, UUID_STR_LEN + 1);
         item->kind = ITEM_FOLDER;
@@ -596,11 +606,12 @@ static void rebuild_flat(Folder *f, size_t depth, FlatItem **out, size_t *count,
         item->is_collapsed = is_searching ? 0 : sub->is_collapsed;
 
         if (is_searching || !sub->is_collapsed) {
-            rebuild_flat(sub, depth + 1, out, count, expanded, search);
+            rebuild_flat(sub, depth + 1, out, count, expanded, search, prev_matches);
         }
     }
     for (size_t i = 0; i < f->entry_count; i++) {
         const Entry *e = &f->entries[i];
+        if (prev_matches && !idset_contains(prev_matches, e->id)) continue;
         int match = 1;
         if (is_searching) {
             match = e->text && entry_matches_search(e->text, search);
@@ -623,10 +634,23 @@ void app_rebuild_flat_items(App *app) {
     }
     app->flat_count = 0;
 
+    /* Incremental search: if the new search string extends the previous one,
+     * we can prune the tree walk to only items that matched the shorter prefix.
+     * Clearing or shortening the search falls back to a full scan. */
+    IdSet *prev_matches = NULL;
+    if (app->prev_search_input && app->prev_search_input[0] &&
+        app->search_input && app->search_input[0]) {
+        size_t prev_len = strlen(app->prev_search_input);
+        if (strlen(app->search_input) > prev_len &&
+            strncmp(app->search_input, app->prev_search_input, prev_len) == 0) {
+            prev_matches = &app->prev_search_matches;
+        }
+    }
+
     /* First pass: count matching items so we can allocate exactly once. */
     size_t total = count_flat_items(&app->data.root_folder,
                                     &app->search_expanded_folders,
-                                    app->search_input);
+                                    app->search_input, prev_matches);
     if (total > app->flat_cap) {
         FlatItem *new_items = realloc(app->flat_items, total * sizeof(FlatItem));
         if (!new_items) return;
@@ -637,8 +661,16 @@ void app_rebuild_flat_items(App *app) {
     /* Second pass: fill the pre-allocated array. */
     rebuild_flat(&app->data.root_folder, 0,
                  &app->flat_items, &app->flat_count,
-                 &app->search_expanded_folders, app->search_input);
+                 &app->search_expanded_folders, app->search_input, prev_matches);
     app->flat_dirty = 0;
+
+    /* Cache the current search results for the next incremental step. */
+    free(app->prev_search_input);
+    app->prev_search_input = app->search_input ? str_dup(app->search_input) : NULL;
+    idset_clear(&app->prev_search_matches);
+    for (size_t i = 0; i < app->flat_count; i++) {
+        idset_add(&app->prev_search_matches, app->flat_items[i].id);
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1040,6 +1072,8 @@ void app_free(App *app) {
 #endif
     if (app->watch_pipe_write >= 0) close(app->watch_pipe_write);
     idmap_free(&app->id_map);
+    free(app->prev_search_input);
+    idset_clear(&app->prev_search_matches);
 }
 
 /* -------------------------------------------------------------------------- */
