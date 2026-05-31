@@ -1916,8 +1916,6 @@ static void app_handle_notes(App *app, int ch, int *changed) {
             app->notes_cursor_y--;
             if (line_starts) {
                 size_t prev_end = line_starts[app->notes_cursor_y + 1];
-                size_t line_len = prev_end - line_starts[app->notes_cursor_y];
-                if (line_len > 0) line_len--; /* exclude trailing \n if any */
                 /* Don't go past the actual end */
                 size_t prev_text_start = line_starts[app->notes_cursor_y];
                 size_t actual_len = 0;
@@ -1934,7 +1932,7 @@ static void app_handle_notes(App *app, int ch, int *changed) {
             size_t cur_start = line_starts[app->notes_cursor_y];
             size_t cur_end = line_starts[app->notes_cursor_y + 1];
             size_t line_content = cur_end - cur_start;
-            if (line_content > 0 && app->notes_text && app->notes_text[cur_end - 1] == '\n')
+            if (line_content > 0 && app->notes_text[cur_end - 1] == '\n')
                 line_content--;
             if (app->notes_cursor_x < line_content) {
                 app->notes_cursor_x++;
