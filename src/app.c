@@ -829,6 +829,7 @@ void app_free(App *app) {
     for (size_t i = 0; i < app->flat_count; i++) free(app->flat_items[i].name);
     free(app->flat_items);
     free(app->notes_text);
+    free(app->notes_line_starts);
     free(app->settings_links_path);
     free(app->settings_notes_path);
     free(app->config_dir);
@@ -974,6 +975,11 @@ int app_load(App *app) {
         fclose(fp);
     }
     free(notes_path);
+
+    /* Invalidate line cache — notes_text may have been replaced */
+    free(app->notes_line_starts);
+    app->notes_line_starts = NULL;
+    app->notes_line_total = 0;
 
     return 0;
 }
@@ -1184,6 +1190,11 @@ int app_reload(App *app) {
         if (found) idset_add(&app->selected_item_ids, old_selected.ids[i]);
     }
     idset_clear(&old_selected);
+
+    /* Invalidate line cache — notes_text may have been replaced */
+    free(app->notes_line_starts);
+    app->notes_line_starts = NULL;
+    app->notes_line_total = 0;
 
     free(data_path);
     return 0;
@@ -1736,6 +1747,9 @@ static void app_handle_popup(App *app, int ch, int *changed) {
                         ensure_root_id(app);
                         free(app->notes_text);
                         app->notes_text = str_dup(app->data.notes ? app->data.notes : "");
+                        free(app->notes_line_starts);
+                        app->notes_line_starts = NULL;
+                        app->notes_line_total = 0;
                         app_data_changed(app);
                         free(app->message);
                         app->message = str_dup("Imported successfully");
@@ -1890,41 +1904,52 @@ static void app_handle_links(App *app, int ch, int *changed) {
     }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Notes line cache — rebuilt once per structural change instead of per char  */
+/* -------------------------------------------------------------------------- */
+
+static void notes_rebuild_lines(App *app) {
+    free(app->notes_line_starts);
+    app->notes_line_starts = NULL;
+    app->notes_line_total = 0;
+
+    if (!app->notes_text) return;
+
+    app->notes_line_total = 1;
+    size_t len = strlen(app->notes_text);
+    for (size_t i = 0; i < len; i++)
+        if (app->notes_text[i] == '\n') app->notes_line_total++;
+
+    app->notes_line_starts = malloc(app->notes_line_total * sizeof(size_t));
+    if (!app->notes_line_starts) { app->notes_line_total = 0; return; }
+
+    size_t li = 0;
+    app->notes_line_starts[li++] = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (app->notes_text[i] == '\n')
+            app->notes_line_starts[li++] = i + 1;
+    }
+}
+
 static void app_handle_notes(App *app, int ch, int *changed) {
-    /* Helper: locate line boundaries */
-    size_t total_lines = 1;
-    size_t *line_starts = NULL;
+    /* Ensure cached line data is valid */
+    if (!app->notes_line_starts) notes_rebuild_lines(app);
+
+    size_t total_lines = app->notes_line_total;
+    size_t *line_starts = app->notes_line_starts;
 
     /* Compute absolute cursor offset from (notes_cursor_x, notes_cursor_y) */
     size_t cursor_offset = 0;
-    if (app->notes_text) {
-        size_t len = strlen(app->notes_text);
-        for (size_t i = 0; i < len; i++) {
-            if (app->notes_text[i] == '\n') total_lines++;
-        }
-        line_starts = malloc((total_lines + 1) * sizeof(size_t));
-        if (line_starts) {
-            size_t li = 0;
-            line_starts[li++] = 0;
-            for (size_t i = 0; i < len && li < total_lines; i++) {
-                if (app->notes_text[i] == '\n') {
-                    line_starts[li++] = i + 1;
-                }
-            }
-            line_starts[li] = len;
-        }
+    if (app->notes_text && line_starts) {
         /* Clamp cursor in case notes_text was shortened externally */
         if (total_lines == 0) total_lines = 1;
         if (app->notes_cursor_y >= total_lines)
             app->notes_cursor_y = total_lines - 1;
-        /* Compute offset from cursor position */
-        if (line_starts) {
-            cursor_offset = line_starts[app->notes_cursor_y] + app->notes_cursor_x;
-            size_t line_end = line_starts[app->notes_cursor_y + 1];
-            if (cursor_offset > line_end) cursor_offset = line_end;
-        } else {
-            cursor_offset = len;
-        }
+        cursor_offset = line_starts[app->notes_cursor_y] + app->notes_cursor_x;
+        size_t line_end = (app->notes_cursor_y + 1 < total_lines)
+                          ? line_starts[app->notes_cursor_y + 1] - 1
+                          : strlen(app->notes_text);
+        if (cursor_offset > line_end) cursor_offset = line_end;
     }
 
     int text_changed = 0;
@@ -1938,57 +1963,65 @@ static void app_handle_notes(App *app, int ch, int *changed) {
         app->notes_cursor_y++;
         app->notes_cursor_x = 0;
         text_changed = 1;
+        notes_rebuild_lines(app);
+        line_starts = app->notes_line_starts;
+        total_lines = app->notes_line_total;
     } else if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b') {
         if (cursor_offset > 0) {
+            int was_line_boundary = 0;
+            if (app->notes_text && cursor_offset > 0 &&
+                app->notes_text[cursor_offset - 1] == '\n')
+                was_line_boundary = 1;
             str_delete_before(&app->notes_text, cursor_offset);
             if (app->notes_cursor_x > 0) {
                 app->notes_cursor_x--;
             } else if (app->notes_cursor_y > 0) {
-                /* Backspace at line start joined this line with the previous.
-                   Cursor goes to end of the joined previous line. */
                 app->notes_cursor_y--;
                 if (line_starts) {
-                    size_t prev_len = line_starts[app->notes_cursor_y + 1]
-                                    - line_starts[app->notes_cursor_y] - 1;
-                    app->notes_cursor_x = prev_len;
-                } else {
-                    app->notes_cursor_x = 0;
+                    size_t ls = line_starts[app->notes_cursor_y];
+                    size_t le = (app->notes_cursor_y + 1 < total_lines)
+                                ? line_starts[app->notes_cursor_y + 1] - 1
+                                : strlen(app->notes_text);
+                    app->notes_cursor_x = (le > ls) ? le - ls : 0;
                 }
             }
             text_changed = 1;
+            if (was_line_boundary) {
+                notes_rebuild_lines(app);
+                line_starts = app->notes_line_starts;
+                total_lines = app->notes_line_total;
+            }
         }
     } else if (ch == 11) { /* Ctrl+K */
         free(app->notes_text);
         app->notes_text = NULL;
+        free(app->notes_line_starts);
+        app->notes_line_starts = NULL;
+        app->notes_line_total = 0;
+        line_starts = NULL;
+        total_lines = 0;
         app->notes_cursor_x = 0;
         app->notes_cursor_y = 0;
         text_changed = 1;
     } else if (ch == KEY_LEFT) {
         if (app->notes_cursor_x > 0) {
             app->notes_cursor_x--;
-        } else if (app->notes_cursor_y > 0) {
+        } else if (app->notes_cursor_y > 0 && line_starts) {
             app->notes_cursor_y--;
-            if (line_starts) {
-                size_t prev_end = line_starts[app->notes_cursor_y + 1];
-                /* Don't go past the actual end */
-                size_t prev_text_start = line_starts[app->notes_cursor_y];
-                size_t actual_len = 0;
-                for (size_t i = prev_text_start; i < prev_end; i++) {
-                    if (app->notes_text && app->notes_text[i] == '\n') break;
-                    actual_len++;
-                }
-                app->notes_cursor_x = actual_len;
-            }
+            size_t ls = line_starts[app->notes_cursor_y];
+            size_t le = (app->notes_cursor_y + 1 < total_lines)
+                        ? line_starts[app->notes_cursor_y + 1] - 1
+                        : strlen(app->notes_text);
+            app->notes_cursor_x = (le > ls) ? le - ls : 0;
         }
     } else if (ch == KEY_RIGHT) {
-        if (!app->notes_text || strlen(app->notes_text) == 0) { }
-        else if (line_starts) {
-            size_t cur_start = line_starts[app->notes_cursor_y];
-            size_t cur_end = line_starts[app->notes_cursor_y + 1];
-            size_t line_content = cur_end - cur_start;
-            if (line_content > 0 && app->notes_text[cur_end - 1] == '\n')
-                line_content--;
-            if (app->notes_cursor_x < line_content) {
+        if (app->notes_text && line_starts) {
+            size_t len = strlen(app->notes_text);
+            size_t ls = line_starts[app->notes_cursor_y];
+            size_t le = (app->notes_cursor_y + 1 < total_lines)
+                        ? line_starts[app->notes_cursor_y + 1] - 1 : len;
+            size_t line_len = le - ls;
+            if (app->notes_cursor_x < line_len) {
                 app->notes_cursor_x++;
             } else if (app->notes_cursor_y + 1 < total_lines) {
                 app->notes_cursor_y++;
@@ -1996,34 +2029,28 @@ static void app_handle_notes(App *app, int ch, int *changed) {
             }
         }
     } else if (ch == KEY_UP) {
-        if (app->notes_cursor_y > 0) {
+        if (app->notes_cursor_y > 0 && line_starts) {
             app->notes_cursor_y--;
-            if (line_starts) {
-                size_t cur_start = line_starts[app->notes_cursor_y];
-                size_t cur_end = line_starts[app->notes_cursor_y + 1];
-                size_t line_len = cur_end - cur_start;
-                if (line_len > 0 && app->notes_text && app->notes_text[cur_end - 1] == '\n')
-                    line_len--;
-                if (app->notes_cursor_x > line_len)
-                    app->notes_cursor_x = line_len;
-            }
+            size_t ls = line_starts[app->notes_cursor_y];
+            size_t le = (app->notes_cursor_y + 1 < total_lines)
+                        ? line_starts[app->notes_cursor_y + 1] - 1
+                        : strlen(app->notes_text);
+            size_t line_len = (le > ls) ? le - ls : 0;
+            if (app->notes_cursor_x > line_len)
+                app->notes_cursor_x = line_len;
         }
     } else if (ch == KEY_DOWN) {
-        if (app->notes_cursor_y + 1 < total_lines) {
+        if (app->notes_cursor_y + 1 < total_lines && line_starts) {
             app->notes_cursor_y++;
-            if (line_starts) {
-                size_t cur_start = line_starts[app->notes_cursor_y];
-                size_t cur_end = line_starts[app->notes_cursor_y + 1];
-                size_t line_len = cur_end - cur_start;
-                if (line_len > 0 && app->notes_text && app->notes_text[cur_end - 1] == '\n')
-                    line_len--;
-                if (app->notes_cursor_x > line_len)
-                    app->notes_cursor_x = line_len;
-            }
+            size_t ls = line_starts[app->notes_cursor_y];
+            size_t le = (app->notes_cursor_y + 1 < total_lines)
+                        ? line_starts[app->notes_cursor_y + 1] - 1
+                        : strlen(app->notes_text);
+            size_t line_len = (le > ls) ? le - ls : 0;
+            if (app->notes_cursor_x > line_len)
+                app->notes_cursor_x = line_len;
         }
     }
-
-    free(line_starts);
 
     if (text_changed) {
         app_data_changed(app);

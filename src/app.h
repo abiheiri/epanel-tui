@@ -144,6 +144,8 @@ typedef struct {
     char *notes_text;
     size_t notes_cursor_x;
     size_t notes_cursor_y;
+    size_t *notes_line_starts; /* cached offsets to start of each line */
+    size_t notes_line_total;   /* cached line count */
     char *settings_links_path;
     char *settings_notes_path;
 #ifdef __APPLE__
