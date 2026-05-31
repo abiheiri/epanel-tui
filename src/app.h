@@ -160,6 +160,8 @@ typedef struct {
     size_t notes_line_total;   /* cached line count */
     char *settings_links_path;
     char *settings_notes_path;
+    char *cached_links_dir;   /* expand_tilde(settings_links_path) — computed once */
+    char *cached_notes_dir;   /* expand_tilde(settings_notes_path) — computed once */
 #ifdef __APPLE__
     int safari_sync_enabled;
     char *safari_sync_path;
@@ -206,6 +208,8 @@ void app_rebuild_flat_items(App *app);
 
 /* Helpers */
 char *expand_tilde(const char *path);
+char *data_file_path(const App *app);
+char *notes_file_path(const App *app);
 
 /* Folder/entry manipulation */
 void folder_free(Folder *f);

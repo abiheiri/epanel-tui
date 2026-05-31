@@ -777,27 +777,33 @@ static int epanel_from_json(const char *json, EPanelData *data) {
 /* Settings / paths                                                           */
 /* -------------------------------------------------------------------------- */
 
-static char *data_file_path(const App *app) {
-    char *expanded = expand_tilde(app->settings_links_path);
-    size_t n = strlen(expanded);
+/* Cache the expanded directory paths.  Call after settings_links_path or
+ * settings_notes_path change so data_file_path/notes_file_path can reuse
+ * a single expand_tilde result instead of re-expanding on every call. */
+static void app_cache_expanded_paths(App *app) {
+    free(app->cached_links_dir);
+    free(app->cached_notes_dir);
+    app->cached_links_dir = expand_tilde(app->settings_links_path);
+    app->cached_notes_dir = expand_tilde(app->settings_notes_path);
+}
+
+char *data_file_path(const App *app) {
+    size_t n = strlen(app->cached_links_dir);
     char *p = malloc(n + 13);
     if (p) {
-        memcpy(p, expanded, n);
+        memcpy(p, app->cached_links_dir, n);
         memcpy(p + n, "/epanel.json", 13);
     }
-    free(expanded);
     return p;
 }
 
-static char *notes_file_path(const App *app) {
-    char *expanded = expand_tilde(app->settings_notes_path);
-    size_t n = strlen(expanded);
+char *notes_file_path(const App *app) {
+    size_t n = strlen(app->cached_notes_dir);
     char *p = malloc(n + 11);
     if (p) {
-        memcpy(p, expanded, n);
+        memcpy(p, app->cached_notes_dir, n);
         memcpy(p + n, "/notes.txt", 11);
     }
-    free(expanded);
     return p;
 }
 
@@ -1047,6 +1053,7 @@ void app_init(App *app) {
     app->sync_pipe_write = -1;
 #endif
     app->watch_pipe_write = -1;
+    app_cache_expanded_paths(app);
 }
 
 void app_free(App *app) {
@@ -1061,6 +1068,8 @@ void app_free(App *app) {
     free(app->notes_line_starts);
     free(app->settings_links_path);
     free(app->settings_notes_path);
+    free(app->cached_links_dir);
+    free(app->cached_notes_dir);
     free(app->config_dir);
     popup_clear(&app->popup);
     free(app->message);
@@ -1149,6 +1158,8 @@ int app_load(App *app) {
     }
     free(expanded_notes);
 
+    app_cache_expanded_paths(app);
+
     char *data_path = data_file_path(app);
     fp = fopen(data_path, "r");
     if (fp) {
@@ -1221,6 +1232,7 @@ int app_load(App *app) {
 }
 
 int app_save(App *app) {
+    app_cache_expanded_paths(app);
     ensure_dir(app->settings_links_path);
     ensure_dir(app->settings_notes_path);
     ensure_dir(app->config_dir);
@@ -1289,6 +1301,7 @@ int app_save(App *app) {
 }
 
 int app_reload(App *app) {
+    app_cache_expanded_paths(app);
     char *data_path = data_file_path(app);
     struct stat st;
     if (stat(data_path, &st) != 0) {

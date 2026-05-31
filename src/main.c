@@ -99,28 +99,8 @@ int main(int argc, char **argv) {
     }
 
     /* Start file watcher — watches both epanel.json and notes.txt */
-    char *data_path = NULL;
-    char *notes_path = NULL;
-    {
-        char *expanded = expand_tilde(app.settings_links_path);
-        size_t n = strlen(expanded);
-        data_path = malloc(n + 13);
-        if (data_path) {
-            memcpy(data_path, expanded, n);
-            memcpy(data_path + n, "/epanel.json", 13);
-        }
-        free(expanded);
-    }
-    {
-        char *expanded = expand_tilde(app.settings_notes_path);
-        size_t n = strlen(expanded);
-        notes_path = malloc(n + 11);
-        if (notes_path) {
-            memcpy(notes_path, expanded, n);
-            memcpy(notes_path + n, "/notes.txt", 11);
-        }
-        free(expanded);
-    }
+    char *data_path = data_file_path(&app);
+    char *notes_path = notes_file_path(&app);
     int watch_fd = -1;
     if (data_path) {
         watch_fd = file_watch_start(data_path, notes_path);
