@@ -18,17 +18,34 @@
 #include <ncurses.h>
 
 #ifdef __APPLE__
+extern size_t malloc_size(const void *ptr);
+#define sb_avail(ptr) ((ptr) ? malloc_size(ptr) : 0)
+#else
+#include <malloc.h>
+#define sb_avail(ptr) ((ptr) ? malloc_usable_size(ptr) : 0)
+#endif
+
+#ifdef __APPLE__
 #include "safari_sync.h"
 #endif
 
 /* -------------------------------------------------------------------------- */
-/* String helpers                                                             */
+/* String helpers — capacity-aware, avoiding per-char realloc                 */
 /* -------------------------------------------------------------------------- */
 
 static char *str_dup(const char *s) {
     if (!s) return NULL;
     size_t n = strlen(s) + 1;
     char *d = malloc(n);
+    if (d) memcpy(d, s, n);
+    return d;
+}
+
+static char *str_dup_cap(const char *s, size_t min_cap) {
+    if (!s) return NULL;
+    size_t n = strlen(s) + 1;
+    size_t cap = n > min_cap ? n : min_cap;
+    char *d = malloc(cap);
     if (d) memcpy(d, s, n);
     return d;
 }
@@ -44,12 +61,14 @@ static char *str_dup_len(const char *s, size_t len) {
 
 static void str_append_char(char **s, char c) {
     size_t len = *s ? strlen(*s) : 0;
-    char *n = realloc(*s, len + 2);
-    if (n) {
-        n[len] = c;
-        n[len + 1] = '\0';
+    if (!*s || len + 2 > sb_avail(*s)) {
+        size_t new_cap = *s ? sb_avail(*s) * 2 : 64;
+        char *n = realloc(*s, new_cap);
+        if (!n) return;
         *s = n;
     }
+    (*s)[len] = c;
+    (*s)[len + 1] = '\0';
 }
 
 static void str_pop_char(char **s) {
@@ -61,12 +80,14 @@ static void str_pop_char(char **s) {
 static void str_insert_char(char **s, size_t pos, char c) {
     size_t len = *s ? strlen(*s) : 0;
     if (pos > len) pos = len;
-    char *n = realloc(*s, len + 2);
-    if (n) {
-        memmove(n + pos + 1, n + pos, len - pos + 1);
-        n[pos] = c;
+    if (!*s || len + 2 > sb_avail(*s)) {
+        size_t new_cap = *s ? sb_avail(*s) * 2 : 64;
+        char *n = realloc(*s, new_cap);
+        if (!n) return;
         *s = n;
     }
+    memmove(*s + pos + 1, *s + pos, len - pos + 1);
+    (*s)[pos] = c;
 }
 
 static void str_delete_before(char **s, size_t pos) {
@@ -766,8 +787,8 @@ void app_init(App *app) {
     app->config_dir = config_path();
     app->settings_links_path = str_dup(app->config_dir);
     app->settings_notes_path = str_dup(app->config_dir);
-    app->search_input = str_dup("");
-    app->notes_text = str_dup("");
+    app->search_input = str_dup_cap("", 64);
+    app->notes_text = str_dup_cap("", 64);
 
 #ifdef __APPLE__
     app->safari_sync_enabled = 0;
@@ -1488,7 +1509,7 @@ static void app_handle_popup(App *app, int ch, int *changed) {
             popup_navigate_choices(p, ch, &p->selected_folder);
         } else if (ch == '\n' || ch == KEY_ENTER) {
             app_add_entry_to_folder(app, p->text ? p->text : "", p->selected_folder ? p->selected_folder : app->data.root_folder.id);
-            free(app->search_input); app->search_input = str_dup("");
+            free(app->search_input); app->search_input = str_dup_cap("", 64);
             idset_clear(&app->search_expanded_folders);
             idset_clear(&app->selected_item_ids);
             app_rebuild_flat_items(app);
@@ -1831,7 +1852,7 @@ static void app_handle_links(App *app, int ch, int *changed) {
         } else if (ch == 'i' || ch == 'I') {
             popup_clear(&app->popup);
             app->popup.type = POPUP_IMPORT_JSON;
-            app->popup.path = str_dup("");
+            app->popup.path = str_dup_cap("", 128);
             app->popup.cursor_pos = 0;
             *changed = 1;
         } else if (ch == KEY_RIGHT) {
@@ -2140,7 +2161,7 @@ int app_handle_key(App *app, int ch) {
     } else if (ch == 27) { /* Esc */
         if (app->search_input && app->search_input[0] != '\0') {
             free(app->search_input);
-            app->search_input = str_dup("");
+            app->search_input = str_dup_cap("", 64);
             idset_clear(&app->search_expanded_folders);
             app->flat_dirty = 1;
             changed = 1;
