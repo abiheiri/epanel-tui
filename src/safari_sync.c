@@ -112,6 +112,7 @@ char *safari_import_plist(const char *path, Folder **folders, size_t *count, Fol
     char *err = NULL;
     char *to_free = NULL;
 
+    char *container_path = NULL;
     struct stat st;
     const char *effective_path = path;
     int found = 0;
@@ -121,13 +122,13 @@ char *safari_import_plist(const char *path, Folder **folders, size_t *count, Fol
     } else {
         const char *home = getenv("HOME");
         if (home) {
-            const char *fallback = "/Library/Containers/com.apple.Safari/Data/Library/Safari/Bookmarks.plist";
-            size_t len = strlen(home) + strlen(fallback) + 1;
-            to_free = malloc(len);
-            if (to_free) {
-                snprintf(to_free, len, "%s%s", home, fallback);
-                if (stat(to_free, &st) == 0) {
-                    effective_path = to_free;
+            const char *container = "/Library/Containers/com.apple.Safari/Data/Library/Safari/Bookmarks.plist";
+            size_t len = strlen(home) + strlen(container) + 1;
+            container_path = malloc(len);
+            if (container_path) {
+                snprintf(container_path, len, "%s%s", home, container);
+                if (stat(container_path, &st) == 0) {
+                    effective_path = container_path;
                     found = 1;
                 }
             }
@@ -135,7 +136,10 @@ char *safari_import_plist(const char *path, Folder **folders, size_t *count, Fol
     }
 
     if (!found) {
-        err = strdup("Safari bookmarks file not found.\n\nOn newer macOS versions the file may be in a different location (e.g. ~/Library/Containers/com.apple.Safari/Data/Library/Safari/Bookmarks.plist).");
+        err = strdup("Safari bookmarks file not found.\n\n"
+                     "Expected at:\n"
+                     "  ~/Library/Safari/Bookmarks.plist\n"
+                     "  ~/Library/Containers/com.apple.Safari/Data/Library/Safari/Bookmarks.plist");
         goto done;
     }
 
@@ -145,14 +149,10 @@ char *safari_import_plist(const char *path, Folder **folders, size_t *count, Fol
 #else
     FILE *fp = fopen(effective_path, "rb");
     if (!fp) {
-        if (errno == EACCES) {
-            err = strdup("Cannot open Safari bookmarks file: Permission denied.\n\n"
-                         "epanel needs Full Disk Access to read Safari bookmarks.\n"
-                         "Go to System Settings \u2192 Privacy & Security \u2192 Full Disk Access,\n"
-                         "and add your terminal app (or epanel) to the list.");
-        } else {
-            err = strdup("Cannot open Safari bookmarks file.");
-        }
+        err = strdup("Cannot open Safari bookmarks file.\n\n"
+                     "Make sure Terminal has Full Disk Access:\n"
+                     "  System Settings → Privacy & Security → Full Disk Access\n"
+                     "Grant it, then rebuild epanel and try again.");
         goto done;
     }
 
@@ -191,11 +191,6 @@ char *safari_import_plist(const char *path, Folder **folders, size_t *count, Fol
     CFPropertyListRef plist = CFPropertyListCreateWithData(
         kCFAllocatorDefault, data, kCFPropertyListImmutable, NULL, NULL);
     CFRelease(data);
-
-    if (!plist) {
-        err = strdup("Failed to parse Safari bookmarks plist.");
-        goto done;
-    }
 
     if (CFGetTypeID(plist) != CFDictionaryGetTypeID()) {
         CFRelease(plist);
@@ -275,6 +270,7 @@ char *safari_import_plist(const char *path, Folder **folders, size_t *count, Fol
 
 done:
     free(to_free);
+    free(container_path);
     return err;
 }
 
