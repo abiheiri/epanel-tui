@@ -2195,7 +2195,7 @@ static void app_handle_notes(App *app, int ch, int *changed) {
     if (!app->notes_line_starts) notes_rebuild_lines(app);
 
     size_t total_lines = app->notes_line_total;
-    size_t *line_starts = app->notes_line_starts;
+    const size_t *line_starts = app->notes_line_starts;
 
     /* Compute absolute cursor offset from (notes_cursor_x, notes_cursor_y) */
     size_t cursor_offset = 0;
