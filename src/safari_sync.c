@@ -145,7 +145,14 @@ char *safari_import_plist(const char *path, Folder **folders, size_t *count, Fol
 #else
     FILE *fp = fopen(effective_path, "rb");
     if (!fp) {
-        err = strdup("Cannot open Safari bookmarks file.");
+        if (errno == EACCES) {
+            err = strdup("Cannot open Safari bookmarks file: Permission denied.\n\n"
+                         "epanel needs Full Disk Access to read Safari bookmarks.\n"
+                         "Go to System Settings \u2192 Privacy & Security \u2192 Full Disk Access,\n"
+                         "and add your terminal app (or epanel) to the list.");
+        } else {
+            err = strdup("Cannot open Safari bookmarks file.");
+        }
         goto done;
     }
 
