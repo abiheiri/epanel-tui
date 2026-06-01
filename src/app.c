@@ -652,8 +652,12 @@ void app_rebuild_flat_items(App *app) {
                                     &app->search_expanded_folders,
                                     app->search_input, prev_matches);
     if (total > app->flat_cap) {
+        size_t old_cap = app->flat_cap;
         FlatItem *new_items = realloc(app->flat_items, total * sizeof(FlatItem));
         if (!new_items) return;
+        /* Zero the newly allocated portion so free(item->name) in rebuild_flat
+         * doesn't crash on uninitialized garbage pointers. */
+        memset(new_items + old_cap, 0, (total - old_cap) * sizeof(FlatItem));
         app->flat_items = new_items;
         app->flat_cap = total;
     }
